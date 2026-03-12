@@ -1,0 +1,303 @@
+---
+title: Error Handling
+description: Configure how workflows respond to failures — stop, skip, retry, or redirect to a fallback participant.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+duckflux provides fine-grained control over what happens when a step fails. Error handling is configured through the `onError` field and can be set at two levels: on the **participant** (default behavior) and in the **flow** (per-invocation override). The flow always wins.
+
+---
+
+## `onError` — Error strategies
+
+The `onError` field accepts one of four values:
+
+| Value | Behavior |
+|-------|----------|
+| `fail` | Stops the workflow immediately. **This is the global default.** |
+| `skip` | Marks the step as `skipped` and continues the flow. |
+| `retry` | Re-executes the step according to the `retry` configuration. |
+| `<participant>` | Redirects execution to another participant as a fallback. |
+
+---
+
+## Participant-level configuration
+
+Set `onError` on a participant to define its default error behavior wherever it is used in the flow:
+
+```yaml
+participants:
+  build:
+    type: exec
+    run: npm run build
+    onError: retry
+    retry:
+      max: 3
+      backoff: 2s
+
+  tests:
+    type: exec
+    run: npm test
+    onError: skip
+
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    onError: fail
+```
+
+In this example:
+- `build` retries up to 3 times with a 2-second wait between attempts.
+- `tests` is marked as skipped on failure and the workflow continues.
+- `deploy` stops the whole workflow if it fails.
+
+---
+
+## Flow-level override
+
+Any `onError` (or `retry`) defined on a participant can be overridden at the point of invocation in the `flow`. The flow-level value always takes precedence:
+
+```yaml
+participants:
+  coder:
+    type: exec
+    run: ./generate.sh
+    onError: retry
+    retry:
+      max: 3
+      backoff: 2s
+
+flow:
+  - coder:
+      onError: skip   # overrides the participant-level retry
+  - reviewer
+```
+
+Here `coder` will skip on error in this invocation, ignoring the `retry` defined on the participant.
+
+<Aside type="tip">
+  Use participant-level `onError` as the sensible default for a step, and flow-level overrides when a specific context requires different behavior — for example, retrying in production but skipping in a dry-run workflow.
+</Aside>
+
+---
+
+## `skip` — Continue on failure
+
+When `onError: skip`, the step is marked with `status: skipped` and the workflow moves to the next step. Subsequent steps can read `<step>.status` to react accordingly:
+
+```yaml
+participants:
+  notify:
+    type: http
+    url: https://hooks.example.com/notify
+    method: POST
+    onError: skip
+
+flow:
+  - build
+  - notify
+  - deploy:
+      when: notify.status == "success"
+```
+
+<Aside>
+  A skipped step's output is empty. Accessing `<step>.output.*` after a skip returns a zero value. Use `<step>.status` to distinguish skipped steps from successful ones.
+</Aside>
+
+---
+
+## `retry` — Re-execute with backoff
+
+When `onError: retry`, the runner re-executes the step according to the `retry` configuration:
+
+```yaml
+participants:
+  fetchData:
+    type: http
+    url: https://api.example.com/data
+    method: GET
+    onError: retry
+    retry:
+      max: 3        # maximum number of attempts (required)
+      backoff: 2s   # wait between attempts (default: 0s)
+      factor: 2     # backoff multiplier (default: 1)
+```
+
+### Retry fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max` | integer | — | Maximum number of attempts. Required when `onError: retry`. |
+| `backoff` | duration | `0s` | Initial wait interval between attempts. |
+| `factor` | number | `1` | Multiplier applied to `backoff` on each attempt. |
+
+### Exponential backoff
+
+With `backoff: 2s` and `factor: 2`, the wait intervals grow exponentially:
+
+| Attempt | Wait before retry |
+|---------|------------------|
+| 1st retry | 2s |
+| 2nd retry | 4s |
+| 3rd retry | 8s |
+
+If all attempts fail, the step is treated as a final failure and the workflow stops (unless overridden at flow level).
+
+---
+
+## Fallback participant
+
+The `onError` field also accepts the **name of another participant**. When the step fails, execution is redirected to that participant instead of stopping or skipping:
+
+```yaml
+participants:
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    onError: notify_failure
+
+  notify_failure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+```
+
+When `deploy` fails, `notify_failure` is called. This allows building fallback chains and cleanup paths without branching the entire flow.
+
+<Aside type="caution">
+  The participant referenced in `onError` must exist in the `participants` block. The runner will reject the workflow at parse time if the reference is invalid.
+</Aside>
+
+### Chaining fallbacks
+
+Fallback participants can themselves have an `onError` policy, forming a chain:
+
+```yaml
+participants:
+  primary:
+    type: exec
+    run: ./primary.sh
+    onError: secondary
+
+  secondary:
+    type: exec
+    run: ./secondary.sh
+    onError: notify
+
+  notify:
+    type: http
+    url: https://hooks.example.com/alert
+    method: POST
+    onError: skip
+```
+
+If `primary` fails → runs `secondary`. If `secondary` also fails → runs `notify`. If `notify` fails → skips (workflow continues).
+
+---
+
+## Timeouts as failures
+
+When a step exceeds its configured `timeout`, it is treated as a failure and the `onError` strategy applies normally. This means you can use `retry` or fallback participants to handle timeouts the same way as other errors:
+
+```yaml
+participants:
+  slowApi:
+    type: http
+    url: https://slow.example.com/endpoint
+    method: GET
+    timeout: 10s
+    onError: retry
+    retry:
+      max: 2
+      backoff: 5s
+```
+
+See [Timeout and Working Directory](/workflows/workflow-files/) for the full timeout precedence rules.
+
+---
+
+## Complete example
+
+A deployment pipeline that combines `retry`, `skip`, fallback participants, and flow-level overrides:
+
+```yaml
+id: deploy-pipeline
+name: Deployment Pipeline
+version: "1"
+
+defaults:
+  timeout: 5m
+
+inputs:
+  env:
+    type: string
+    default: staging
+
+participants:
+  build:
+    type: exec
+    run: npm run build
+    timeout: 3m
+    onError: retry
+    retry:
+      max: 2
+      backoff: 10s
+      factor: 2
+
+  tests:
+    type: exec
+    run: npm test
+    timeout: 2m
+    onError: skip
+
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    timeout: 10m
+    onError: rollback
+
+  rollback:
+    type: exec
+    run: ./rollback.sh
+    timeout: 5m
+    onError: notify_failure
+
+  notify_success:
+    type: http
+    url: https://hooks.example.com/success
+    method: POST
+    onError: skip
+
+  notify_failure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+
+flow:
+  - build
+
+  - tests:
+      onError: fail   # override: fail instead of skip in this pipeline
+
+  - deploy
+
+  - if:
+      condition: deploy.status == "success"
+      then:
+        - notify_success
+      else:
+        - notify_failure
+
+output:
+  buildStatus: build.status
+  deployStatus: deploy.status
+```
+
+In this workflow:
+- `build` retries twice with escalating backoff before failing.
+- `tests` is configured to `skip` by default but overridden to `fail` at flow level.
+- If `deploy` fails, `rollback` runs automatically; if `rollback` also fails, `notify_failure` is called.
+- The final `if` block handles the success/failure notification regardless of how the flow ended.

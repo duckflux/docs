@@ -1,0 +1,332 @@
+---
+title: Parallel Execution
+description: Run multiple steps concurrently with the parallel construct, and understand how outputs are aggregated after all branches complete.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The `parallel` construct runs multiple steps at the same time. The flow continues only after **all** parallel branches have finished — whether they succeeded, failed, or were skipped.
+
+---
+
+## Basic usage
+
+Wrap a list of participant references in a `parallel` block:
+
+```yaml
+flow:
+  - parallel:
+      - lint
+      - test
+      - build
+  - report
+```
+
+`lint`, `test`, and `build` start simultaneously. `report` only runs after all three complete.
+
+---
+
+## Inline participants in parallel
+
+Each branch in a `parallel` block follows the same syntax as any other flow step. You can define participants inline — named or anonymous — directly inside the block:
+
+```yaml
+flow:
+  - parallel:
+      - as: lint
+        type: exec
+        run: npm run lint
+        timeout: 30s
+
+      - as: test
+        type: exec
+        run: npm test
+        timeout: 2m
+
+      - as: typecheck
+        type: exec
+        run: npm run typecheck
+        timeout: 30s
+
+  - report
+```
+
+<Aside type="tip">
+  Use inline participants for steps that only appear inside the `parallel` block and are not reused elsewhere. For steps shared across multiple parts of the flow, define them in the `participants` block.
+</Aside>
+
+---
+
+## Accessing outputs after parallel
+
+### Named step outputs
+
+After a `parallel` block completes, every **named** branch output is accessible by name — exactly like any sequential step:
+
+```yaml
+flow:
+  - parallel:
+      - tests
+      - lint
+
+  - if:
+      condition: tests.status == "success" && lint.status == "success"
+      then:
+        - deploy
+      else:
+        - notifyFailure
+```
+
+Each parallel branch writes to its own namespace. `tests.output`, `lint.output`, `tests.status`, and `lint.status` are all available downstream.
+
+### The I/O chain output
+
+The implicit I/O chain (the output automatically passed to the next sequential step) after a `parallel` block is an **array** containing the outputs of all branches in declaration order:
+
+```yaml
+flow:
+  - parallel:
+      - stepA   # index 0 in the output array
+      - stepB   # index 1 in the output array
+      - stepC   # index 2 in the output array
+
+  - as: aggregator
+    type: exec
+    run: ./aggregate.sh   # receives [ stepA.output, stepB.output, stepC.output ] as input
+```
+
+### Anonymous participants in parallel
+
+Anonymous branches (without `as`) are included **positionally** in the chain output array, but cannot be referenced by name in subsequent CEL expressions:
+
+```yaml
+flow:
+  - parallel:
+      - as: namedBranch
+        type: exec
+        run: echo "named"
+
+      - type: exec            # anonymous — output accessible only via the array
+        run: echo "anonymous"
+
+  - as: next
+    type: exec
+    run: ./process.sh   # input[0] is namedBranch output, input[1] is the anonymous output
+```
+
+<Aside>
+  Anonymous branch outputs are only useful as part of the aggregated parallel result passed via the I/O chain. If you need to reference a branch's output by name in a downstream step, always give it an `as` identifier.
+</Aside>
+
+---
+
+## Error handling in parallel steps
+
+Each branch has independent error handling. Configure `onError` per participant:
+
+```yaml
+participants:
+  lint:
+    type: exec
+    run: npm run lint
+    onError: skip
+
+  test:
+    type: exec
+    run: npm test
+    onError: fail
+
+  audit:
+    type: exec
+    run: npm audit
+    onError: skip
+
+flow:
+  - parallel:
+      - lint
+      - test
+      - audit
+```
+
+- If `test` fails → the workflow stops immediately (`onError: fail`).
+- If `lint` or `audit` fail → those branches are marked `skipped` and the others continue running.
+
+<Aside>
+  The `parallel` block waits for all branches to settle before moving on. Failure propagates after all branches have completed or been terminated.
+</Aside>
+
+You can also override `onError` at the flow level for a specific invocation:
+
+```yaml
+flow:
+  - parallel:
+      - lint:
+          onError: skip   # overrides the participant-level setting for this invocation
+      - test
+      - audit
+```
+
+---
+
+## Sub-workflows in parallel
+
+`parallel` branches can call [sub-workflows](/workflows/nested-workflows/), enabling large concurrent workloads to be encapsulated in separate files:
+
+```yaml
+flow:
+  - parallel:
+      - as: lintCheck
+        type: workflow
+        path: ./lint.flow.yaml
+
+      - as: securityScan
+        type: workflow
+        path: ./security.flow.yaml
+
+      - as: buildArtifact
+        type: workflow
+        path: ./build.flow.yaml
+
+  - deploy:
+      when: lintCheck.output.passed == true && securityScan.output.clean == true
+```
+
+Each sub-workflow runs in its own isolated `execution.context` and returns its output when complete.
+
+---
+
+## Parallel inside other constructs
+
+`parallel` can appear inside loops, conditionals, and other flow constructs.
+
+### Inside a loop
+
+```yaml
+flow:
+  - loop:
+      max: 3
+      steps:
+        - parallel:
+            - fetchA
+            - fetchB
+        - merge
+```
+
+On each iteration, `fetchA` and `fetchB` run concurrently, then `merge` runs after both complete.
+
+### Inside a conditional branch
+
+```yaml
+flow:
+  - runTests
+  - if:
+      condition: runTests.output.passed == true
+      then:
+        - parallel:
+            - buildFrontend
+            - buildBackend
+        - deploy
+      else:
+        - notifyFailure
+```
+
+---
+
+## Complete example
+
+A CI pipeline that runs quality checks in parallel, then deploys only if all checks pass:
+
+```yaml
+id: ci-pipeline
+name: CI Pipeline
+version: "1"
+
+defaults:
+  timeout: 10m
+
+inputs:
+  branch:
+    type: string
+    default: "main"
+
+participants:
+  lint:
+    type: exec
+    run: npm run lint
+    timeout: 2m
+    onError: skip
+
+  test:
+    type: exec
+    run: npm test
+    timeout: 5m
+    onError: fail
+
+  typecheck:
+    type: exec
+    run: npm run typecheck
+    timeout: 2m
+    onError: skip
+
+  audit:
+    type: exec
+    run: npm audit --audit-level=high
+    timeout: 1m
+    onError: skip
+
+  build:
+    type: exec
+    run: npm run build
+    timeout: 5m
+    onError: fail
+
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    timeout: 10m
+    onError: fail
+
+  notifySuccess:
+    type: http
+    url: https://hooks.example.com/success
+    method: POST
+    onError: skip
+
+  notifyFailure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+
+flow:
+  - parallel:
+      - lint
+      - test
+      - typecheck
+      - audit
+
+  - build:
+      when: test.status == "success"
+
+  - deploy:
+      when: build.status == "success"
+
+  - if:
+      condition: deploy.status == "success"
+      then:
+        - notifySuccess
+      else:
+        - notifyFailure
+
+output:
+  lintStatus: lint.status
+  testStatus: test.status
+  buildStatus: build.status
+  deployStatus: deploy.status
+```
+
+Walk-through:
+1. All four quality checks run concurrently. `test` will stop the workflow if it fails; the others skip on failure.
+2. `build` runs only if `test` passed.
+3. `deploy` runs only if `build` succeeded.
+4. The final `if` sends the appropriate notification.

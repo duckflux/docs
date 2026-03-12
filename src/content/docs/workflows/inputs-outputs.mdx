@@ -1,0 +1,460 @@
+---
+title: Inputs and outputs
+description: How to declare and pass data into workflows, between participants, and back to the caller.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+duckflux follows a single principle for data flow: **string by default, schema on demand**. Every participant receives and returns a string unless you explicitly define a schema — just like stdin/stdout, the universal interface. This means a workflow with zero input configuration still works, and you only add schema when you need validation or typed access.
+
+---
+
+## Core principle: string by default
+
+All I/O is optional. A minimal workflow with no `inputs`, no `output`, and no `input` mapping on any participant is completely valid:
+
+```yaml
+participants:
+  greet:
+    type: exec
+    run: echo "Hello, duckflux!"
+
+flow:
+  - greet
+```
+
+No schema required. The workflow runs, and the output is whatever `greet` printed to stdout — a plain string.
+
+Schema is **opt-in** at every level. When defined, it uses JSON Schema syntax (written in YAML) for validation and typed access.
+
+---
+
+## Workflow inputs
+
+The top-level `inputs` block declares what parameters the workflow accepts from its caller.
+
+### String-only (bare keys)
+
+The simplest form: just declare the names. Every field is treated as a string with no validation:
+
+```yaml
+inputs:
+  repoUrl:
+  branch:
+  env:
+```
+
+These are accessible in any CEL expression as `workflow.inputs.repoUrl`, `workflow.inputs.branch`, `workflow.inputs.env`.
+
+### With schema
+
+Add JSON Schema properties to each field for type validation, defaults, and documentation:
+
+```yaml
+inputs:
+  repoUrl:
+    type: string
+    format: uri
+    required: true
+    description: "Repository URL to deploy from"
+  branch:
+    type: string
+    default: "main"
+  maxRetries:
+    type: integer
+    minimum: 1
+    maximum: 10
+    default: 3
+  tags:
+    type: array
+    items:
+      type: string
+  verbose:
+    type: boolean
+    default: false
+```
+
+<Aside>
+  `required: true` inside a field definition is syntactic sugar — the parser normalizes it to the canonical JSON Schema format at validation time.
+
+  If `type` is not specified, the field is treated as `string`.
+</Aside>
+
+### Supported schema properties
+
+| Property | Description |
+|----------|-------------|
+| `type` | JSON Schema type: `string`, `integer`, `number`, `boolean`, `array`, `object` |
+| `default` | Value used when the caller does not provide the field |
+| `required` | If `true`, the runner rejects the workflow when the field is missing |
+| `description` | Human-readable description (used in `duckflux validate` output) |
+| `format` | String format hint: `uri`, `date`, `email`, etc. |
+| `minimum` / `maximum` | Numeric bounds |
+| `items` | Schema for array items |
+
+### Passing inputs at runtime
+
+Inputs can be provided via the CLI in three equivalent ways (highest priority wins):
+
+```bash
+# Inline flags
+duckflux run deploy.flow.yaml --input branch=main --input env=staging
+
+# JSON file
+duckflux run deploy.flow.yaml --input-file inputs.json
+
+# Piped JSON via stdin
+echo '{"branch": "main", "env": "staging"}' | duckflux run deploy.flow.yaml
+```
+
+Resolution priority: `--input` flags > `--input-file` > stdin.
+
+---
+
+## Participant inputs
+
+The `input` field on a participant maps data from the workflow into that participant before it executes. Values are [CEL expressions](/workflows/variables-and-expressions/) — they can reference `workflow.inputs.*`, `env.*`, other step outputs, and any runtime variable.
+
+### String passthrough (single expression)
+
+Pass a single value as the participant's entire input:
+
+```yaml
+participants:
+  coder:
+    type: exec
+    run: ./generate.sh
+    input: workflow.inputs.taskDescription
+```
+
+The value of `workflow.inputs.taskDescription` is passed as-is — a string.
+
+### Structured mapping
+
+Pass multiple named fields:
+
+```yaml
+participants:
+  coder:
+    type: exec
+    run: ./generate.sh
+    input:
+      task: workflow.inputs.taskDescription
+      context: reviewer.output.feedback
+      repo: workflow.inputs.repoUrl
+```
+
+Each key becomes a named input the participant can read. Values are CEL expressions evaluated at execution time.
+
+### On inline participants
+
+Inline participants (defined directly in the `flow`) use the same `input` field:
+
+```yaml
+flow:
+  - as: notify
+    type: http
+    url: https://hooks.example.com/webhook
+    method: POST
+    input:
+      message: coder.output.summary
+      branch: workflow.inputs.branch
+```
+
+### Flow-level override
+
+When invoking a reusable participant in the flow, you can override its `input` mapping for that specific call:
+
+```yaml
+participants:
+  coder:
+    type: exec
+    run: ./generate.sh
+    input: workflow.inputs.taskDescription
+
+flow:
+  - coder:
+      input: reviewer.output.feedback   # override for this invocation
+  - reviewer
+```
+
+<Aside type="tip">
+  Use participant-level `input` as the default mapping, and flow-level overrides when a specific context requires different data — for example, feeding reviewer feedback back into the coder on a second pass.
+</Aside>
+
+---
+
+## Participant outputs
+
+Each participant produces output accessible as `<step>.output` in any subsequent CEL expression.
+
+### Default behavior: automatic string and JSON parsing
+
+Without a schema, participant output is a string. The runtime attempts automatic parsing:
+
+1. If the output is valid JSON → accessible as a map (`coder.output.field`, `coder.output.nested.value`)
+2. If not → accessible as a plain string (`coder.output`)
+
+This means a participant that prints `{"approved": true, "score": 9}` to stdout makes `reviewer.output.approved` and `reviewer.output.score` immediately available — no schema required.
+
+### With explicit schema
+
+Define an `output` map on the participant to enable validation. If the step's output does not match the schema, it is treated as a failure and the `onError` strategy applies:
+
+```yaml
+participants:
+  reviewer:
+    type: exec
+    run: ./review.sh
+    output:
+      approved:
+        type: boolean
+        required: true
+      score:
+        type: integer
+        minimum: 0
+        maximum: 10
+      comments:
+        type: string
+```
+
+### Accessing step output
+
+Regardless of whether a schema is defined, step results are accessed the same way in expressions:
+
+```yaml
+# in conditions
+- if:
+    condition: reviewer.output.approved == true
+
+# in guards
+- deploy:
+    when: reviewer.output.score > 7
+
+# in loop exit conditions
+- loop:
+    until: reviewer.output.approved == true
+    max: 5
+    steps:
+      - coder
+      - reviewer
+
+# in input mappings of later steps
+participants:
+  notify:
+    type: http
+    url: https://hooks.example.com/done
+    method: POST
+    input:
+      approved: reviewer.output.approved
+      score: reviewer.output.score
+```
+
+Beyond `.output`, each step also exposes execution metadata:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `<step>.status` | string | `success`, `failure`, or `skipped` |
+| `<step>.output` | string or map | The step's raw output (auto-parsed if JSON) |
+| `<step>.startedAt` | timestamp | When the step started |
+| `<step>.finishedAt` | timestamp | When the step finished |
+| `<step>.duration` | duration | Execution time |
+| `<step>.retries` | int | How many times the step was retried |
+| `<step>.error` | string | Error message when `status == "failure"` |
+
+---
+
+## Workflow output
+
+The top-level `output` block defines what the workflow returns to its caller (CLI, API, or parent workflow when used as a sub-workflow).
+
+**If `output` is not defined, the workflow output is the output of the last executed step.**
+
+### Single value
+
+Map the entire workflow output to a single value:
+
+```yaml
+output: reviewer.output.summary
+```
+
+### Structured mapping
+
+Map individual fields from step outputs:
+
+```yaml
+output:
+  approved: reviewer.output.approved
+  code: coder.output.code
+  summary: reviewer.output.summary
+  testResult: tests.status
+```
+
+### With schema (return validation)
+
+Add a `schema` block alongside `map` to validate the workflow's return value:
+
+```yaml
+output:
+  schema:
+    approved:
+      type: boolean
+      required: true
+    code:
+      type: string
+    summary:
+      type: string
+  map:
+    approved: reviewer.output.approved
+    code: coder.output.code
+    summary: reviewer.output.summary
+```
+
+When schema is provided, the runtime validates the mapped output before returning it to the caller. Validation failure is treated as a workflow-level error.
+
+<Aside>
+  For sub-workflows (participants with `type: workflow`), the `output` defined in the sub-workflow becomes accessible as `<step>.output.*` in the parent workflow — exactly like any other participant output.
+</Aside>
+
+---
+
+## Implicit I/O chain (piping)
+
+The output of each step is **implicitly passed as input** to the next sequential step — analogous to Unix pipes. The chained value is accessible inside the receiving participant via its `input` variable.
+
+```yaml
+flow:
+  - type: exec
+    run: echo '{"score": 9}'
+  - as: notify
+    type: http
+    url: https://hooks.example.com/done
+    method: POST
+    # input.score is the piped output from the previous step
+```
+
+When a participant has **both** a chained input and an explicit `input` mapping, the runtime merges them:
+
+| Chained type | Explicit type | Result |
+|---|---|---|
+| map | map | Merged — explicit keys take precedence |
+| string | string | Explicit takes precedence |
+| Incompatible types | — | Runtime error |
+
+### Chain behavior in control flow
+
+| Construct | Chain output |
+|---|---|
+| `if/then/else` | Output of the last step in the executed branch |
+| `loop` | Output of the last step of the last iteration |
+| `parallel` | Array of outputs from all branches, in declaration order |
+
+<Aside type="tip">
+  The implicit chain is most useful for pipeline-style flows where each step transforms data and passes it forward. For complex data routing, use explicit `input` mappings instead.
+</Aside>
+
+---
+
+## I/O levels at a glance
+
+duckflux has four distinct I/O boundaries:
+
+| Level | Field | Purpose |
+|-------|-------|---------|
+| Workflow inputs | `inputs:` (top-level) | Parameters the workflow accepts from the caller |
+| Participant inputs | `input:` (on a participant) | Data mapped into a specific step before execution |
+| Participant outputs | `output:` (on a participant) | Schema for validating a step's return value |
+| Workflow output | `output:` (top-level) | Final result returned to the workflow's caller |
+
+---
+
+## Precedence summary
+
+```
+Nothing defined          → string in, string out — no validation
+Bare keys (inputs only)  → named strings, no type validation
+Mapping only             → data passthrough, no schema validation
+With schema              → type/constraint validation via JSON Schema
+```
+
+---
+
+## Complete example
+
+A deployment workflow that uses all four I/O levels:
+
+```yaml
+id: deploy
+name: Deployment Pipeline
+version: "1"
+
+# Workflow inputs — with schema
+inputs:
+  branch:
+    type: string
+    default: "main"
+  env:
+    type: string
+    required: true
+    description: "Target environment: staging or production"
+  maxRetries:
+    type: integer
+    default: 3
+    minimum: 1
+    maximum: 5
+
+participants:
+  build:
+    type: exec
+    run: ./build.sh
+    # Participant input — structured mapping
+    input:
+      branch: workflow.inputs.branch
+      env: workflow.inputs.env
+    # Participant output — with schema
+    output:
+      artifact:
+        type: string
+        required: true
+      version:
+        type: string
+
+  tests:
+    type: exec
+    run: npm test
+    input: build.output.artifact   # single string passthrough
+
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    input:
+      artifact: build.output.artifact
+      version: build.output.version
+      env: workflow.inputs.env
+    output:
+      url:
+        type: string
+      deployedAt:
+        type: string
+
+flow:
+  - build
+  - tests
+  - deploy:
+      when: tests.status == "success"
+
+# Workflow output — structured mapping with schema
+output:
+  schema:
+    url:
+      type: string
+      required: true
+    version:
+      type: string
+    env:
+      type: string
+  map:
+    url: deploy.output.url
+    version: build.output.version
+    env: workflow.inputs.env
+```

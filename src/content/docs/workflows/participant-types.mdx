@@ -1,0 +1,361 @@
+---
+title: Participant types
+description: Reference for all participant types in duckflux — exec, http, mcp, workflow, and emit — including their fields and usage examples.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+A participant is the atomic unit of work in a duckflux workflow. Each participant has a `type` that determines how it executes. All participants share a set of common fields, and each type adds its own specific fields on top.
+
+---
+
+## Common fields
+
+These fields are available on every participant type:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | — | **Required.** The participant type (`exec`, `http`, `mcp`, `workflow`, `emit`). |
+| `as` | string | — | Display name. Required for reusable participants; optional for inline ones. Enables output reference by name. |
+| `timeout` | duration | from `defaults` | Maximum execution time. Treated as a failure when exceeded. |
+| `onError` | string | `fail` | Error handling strategy. See [Error Handling](/workflows/error-handling/). |
+| `retry` | object | — | Retry configuration. Only applies when `onError: retry`. |
+| `input` | string or object | — | Explicit input mapping via CEL expressions. See [Inputs & Outputs](/workflows/inputs-outputs/). |
+| `output` | object | — | Output schema (JSON Schema, opt-in). |
+
+---
+
+## `exec` — Shell command
+
+Runs a shell command in the host environment. Use this for builds, tests, linting, deployments, or any operation that can be expressed as a terminal command.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `run` | string | **Required.** The shell command to execute. |
+| `cwd` | string | Working directory. Supports CEL expressions. |
+
+### Examples
+
+<Tabs>
+  <TabItem label="Basic">
+    ```yaml
+    participants:
+      build:
+        type: exec
+        run: npm run build
+    ```
+  </TabItem>
+  <TabItem label="With timeout and retry">
+    ```yaml
+    participants:
+      test:
+        type: exec
+        run: npm test
+        timeout: 5m
+        onError: retry
+        retry:
+          max: 3
+          backoff: 5s
+          factor: 2
+    ```
+  </TabItem>
+  <TabItem label="With dynamic cwd">
+    ```yaml
+    participants:
+      build:
+        type: exec
+        run: npm run build
+        cwd: workflow.inputs.packagePath
+    ```
+  </TabItem>
+</Tabs>
+
+The `cwd` field accepts either a literal path or a CEL expression. Precedence for working directory resolution:
+
+```
+participant.cwd > defaults.cwd > CLI --cwd > process cwd
+```
+
+<Aside type="tip">
+  The output of an `exec` participant is the stdout of the command. If stdout is valid JSON, the runtime will parse it automatically — making fields accessible as `<step>.output.<field>` in downstream CEL expressions.
+</Aside>
+
+---
+
+## `http` — HTTP request
+
+Sends an HTTP request to an external URL. Use this for API integration, webhooks, and external service calls.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `url` | string | **Required.** Target URL. Supports CEL expressions. |
+| `method` | string | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. |
+| `headers` | object | HTTP headers. Values support CEL expressions. |
+| `body` | string or object | Request body. Supports CEL expressions. |
+
+### Examples
+
+<Tabs>
+  <TabItem label="GET request">
+    ```yaml
+    participants:
+      fetchStatus:
+        type: http
+        url: https://api.example.com/status
+        method: GET
+    ```
+  </TabItem>
+  <TabItem label="POST with dynamic body">
+    ```yaml
+    participants:
+      notifySlack:
+        type: http
+        url: https://hooks.slack.com/services/T000/B000/xxxx
+        method: POST
+        headers:
+          Content-Type: application/json
+        body:
+          text: '"Deployment completed: " + deploy.output.version'
+    ```
+  </TabItem>
+  <TabItem label="Dynamic URL">
+    ```yaml
+    participants:
+      fetchUser:
+        type: http
+        url: '"https://api.example.com/users/" + workflow.inputs.userId'
+        method: GET
+        headers:
+          Authorization: '"Bearer " + env.API_TOKEN'
+    ```
+  </TabItem>
+</Tabs>
+
+<Aside>
+  All `url`, `headers` values, and `body` values support CEL expressions. String concatenation and variable interpolation work as expected — just wrap the expression in quotes as a YAML string value.
+</Aside>
+
+---
+
+## `mcp` — MCP tool call
+
+Delegates a task to an MCP (Model Context Protocol) server. Use this to invoke tools exposed by external MCP servers or integrations.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `server` | string | **Required.** MCP server identifier. |
+| `tool` | string | **Required.** MCP tool name to invoke. |
+
+### Example
+
+```yaml
+participants:
+  codeReviewer:
+    type: mcp
+    server: claude
+    tool: code_review
+    input:
+      code: coder.output
+      language: workflow.inputs.language
+
+flow:
+  - coder
+  - codeReviewer
+```
+
+<Aside type="tip">
+  The `input` mapping passes data to the MCP tool as arguments. Use structured input (object with CEL values) to map specific fields from the workflow context to the tool's expected parameters.
+</Aside>
+
+---
+
+## `workflow` — Sub-workflow
+
+References another duckflux workflow file as a step. Use this to compose large workflows from smaller, reusable pieces.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | **Required.** Path to the sub-workflow YAML file, resolved relative to the parent workflow's directory. |
+
+### Example
+
+```yaml
+participants:
+  reviewCycle:
+    type: workflow
+    path: ./review-loop.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+      branch: workflow.inputs.branch
+
+flow:
+  - coder
+  - reviewCycle
+  - deploy
+```
+
+The sub-workflow's output is accessible as `reviewCycle.output` in the parent. `onError` and `timeout` from the parent apply to the sub-workflow as a whole.
+
+See [Nested Workflows](/workflows/nested-workflows/) for full composition semantics.
+
+---
+
+## `emit` — Event
+
+Publishes an event to the workflow's event hub. Use this to broadcast state changes, trigger external listeners, or communicate between parallel branches.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | **Required.** Event name to emit. |
+| `payload` | string or object | Event payload. A single CEL expression or a map of CEL expression values. |
+| `ack` | boolean | If `true`, blocks until the event hub confirms delivery. Default: `false`. |
+
+### Fire-and-forget vs acknowledged
+
+By default, `emit` dispatches the event and continues immediately:
+
+```yaml
+- as: notify
+  type: emit
+  event: "build.started"
+  payload: build.output
+```
+
+With `ack: true`, the step blocks until delivery is confirmed. Combine with `timeout` to cap the wait:
+
+```yaml
+- as: notifyCritical
+  type: emit
+  event: "deploy.started"
+  payload: deploy.output
+  ack: true
+  timeout: 10s
+  onError: skip
+```
+
+### Payload formats
+
+A single CEL expression (passes the value directly):
+
+```yaml
+payload: coder.output
+```
+
+A structured object with CEL expression values:
+
+```yaml
+payload:
+  taskId: workflow.inputs.taskId
+  status: coder.output.status
+  startedAt: execution.startedAt
+```
+
+<Aside>
+  Events emitted via `emit` are also propagated **internally** within the same workflow. A `wait` step can react to events published by earlier steps in the same execution. See [Variables and Expressions](/workflows/variables-and-expressions/) for the `event` variable available inside `wait` blocks.
+</Aside>
+
+---
+
+## Choosing the right type
+
+| You want to… | Use |
+|---|---|
+| Run a shell command, script, or CLI tool | `exec` |
+| Call an external API or send a webhook | `http` |
+| Invoke a tool on an MCP server | `mcp` |
+| Reuse a workflow from another file | `workflow` |
+| Broadcast an event to listeners | `emit` |
+
+---
+
+## Complete example
+
+A pipeline combining all five participant types:
+
+```yaml
+id: full-pipeline
+name: Full Pipeline
+version: "1"
+
+defaults:
+  timeout: 10m
+
+inputs:
+  repoUrl:
+    type: string
+    required: true
+  branch:
+    type: string
+    default: "main"
+
+participants:
+  # exec — run tests locally
+  runTests:
+    type: exec
+    run: npm test
+    timeout: 5m
+    onError: fail
+
+  # http — fetch external config
+  fetchConfig:
+    type: http
+    url: '"https://config.example.com/apps/" + workflow.inputs.branch'
+    method: GET
+    headers:
+      Authorization: '"Bearer " + env.CONFIG_TOKEN'
+
+  # mcp — delegate code review to an MCP tool
+  codeReview:
+    type: mcp
+    server: claude
+    tool: review_pull_request
+    input:
+      repo: workflow.inputs.repoUrl
+      branch: workflow.inputs.branch
+
+  # workflow — run deployment as a sub-workflow
+  deploy:
+    type: workflow
+    path: ./deploy.flow.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+
+  # emit — notify on completion
+  notifyComplete:
+    type: emit
+    event: "pipeline.completed"
+    payload:
+      branch: workflow.inputs.branch
+      testStatus: runTests.status
+      reviewApproved: codeReview.output.approved
+    ack: true
+    timeout: 5s
+    onError: skip
+
+flow:
+  - fetchConfig
+
+  - parallel:
+      - runTests
+      - codeReview
+
+  - deploy:
+      when: runTests.status == "success" && codeReview.output.approved == true
+
+  - notifyComplete
+
+output:
+  testStatus: runTests.status
+  reviewApproved: codeReview.output.approved
+  deployStatus: deploy.status
+```

@@ -1,0 +1,220 @@
+---
+title: Participants
+description: The atomic unit of work in duckflux — how to define, name, and reuse participants across your workflows.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+A **participant** is the atomic unit of work in a duckflux workflow. Every step that does something — run a command, call an API, invoke an MCP tool, emit an event — is a participant. The flow is just an ordered sequence of participants.
+
+Participants are designed around a single interface: **input in, output out**. Regardless of type, every participant receives data, does work, and produces a result. This uniformity is what makes workflows composable.
+
+---
+
+## The simplest form — anonymous inline
+
+The simplest way to define a participant is to write it directly in the `flow`, without any name:
+
+```yaml
+flow:
+  - type: exec
+    run: npm test
+
+  - type: exec
+    run: npm run build
+
+  - type: http
+    url: https://hooks.example.com/done
+    method: POST
+```
+
+That's it. No `participants` block, no names. Each step runs in order, and its output is automatically passed to the next step via the implicit I/O chain — analogous to Unix pipes.
+
+Anonymous participants are the default starting point. Add naming and reuse only when you need them.
+
+<Aside type="caution">
+  Anonymous participants cannot be referenced in CEL expressions by name. If you ever need to access a step's output from a later step — even conditionally — give it a name with `as`.
+</Aside>
+
+---
+
+## Adding a name — named inline
+
+When you need to reference a step's output downstream, add the `as` field directly in the `flow`:
+
+```yaml
+flow:
+  - as: build
+    type: exec
+    run: npm run build
+    timeout: 5m
+
+  - as: deploy
+    type: exec
+    run: ./deploy.sh
+    when: build.status == "success"
+
+  - as: notify
+    type: emit
+    event: "deploy.completed"
+    payload:
+      artifact: build.output.artifactPath
+      status: deploy.status
+```
+
+The `as` value becomes the step's addressable name. You can reference `build.output`, `build.status`, `deploy.status`, and so on in any downstream CEL expression.
+
+Named inline participants are still defined in the `flow` — they are not reusable elsewhere. But they keep the definition co-located with where the step is used, which is usually the right tradeoff for one-off steps.
+
+The `as` value must be unique across the entire workflow — it cannot conflict with any key in the `participants` block or any other `as` value in the flow.
+
+---
+
+## Extracting for reuse — reusable participants
+
+When the same step needs to appear more than once, or when the configuration is complex enough to deserve its own section, move it to the top-level `participants` block:
+
+```yaml
+participants:
+  coder:
+    type: exec
+    run: ./code.sh
+    onError: retry
+    retry:
+      max: 2
+      backoff: 2s
+
+  reviewer:
+    type: exec
+    run: ./review.sh
+    output:
+      approved:
+        type: boolean
+        required: true
+      score:
+        type: integer
+
+flow:
+  - coder
+  - loop:
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - reviewer
+        - coder:
+            when: reviewer.output.approved == false
+```
+
+Here, `coder` is referenced twice — once before the loop and once inside it. Reusable participants make this possible. The `flow` stays clean and readable, with all the detail in the `participants` block.
+
+---
+
+## Comparing the three modes
+
+| | Anonymous inline | Named inline | Reusable |
+|---|---|---|---|
+| Defined in | `flow` (no `as`) | `flow` (with `as`) | `participants` block |
+| Output addressable by name | No | Yes | Yes |
+| Output accessible via chain | Yes | Yes | Yes |
+| Can appear multiple times | No | No | Yes |
+| Best for | Simple pipeline steps | One-off named steps | Shared steps, complex config |
+
+---
+
+## The implicit I/O chain
+
+Every participant's output is automatically passed as input to the **next sequential step**, regardless of definition mode. This forms a chain analogous to Unix pipes.
+
+```yaml
+flow:
+  - type: exec
+    run: echo "hello"                          # output: "hello"
+
+  - as: shout
+    type: exec
+    run: tr '[:lower:]' '[:upper:]'            # input: "hello" → output: "HELLO"
+
+  - type: http
+    url: https://api.example.com/log
+    method: POST
+    body: input                                # input: "HELLO"
+```
+
+When a participant also has an explicit `input` mapping, the runtime merges the chained value with the explicit mapping. Explicit mapping takes precedence on conflict.
+
+See [Inputs & Outputs](/workflows/inputs-outputs/) for the full merge and precedence rules.
+
+---
+
+## Reserved names
+
+The following identifiers are reserved and cannot be used as participant names — either as keys in the `participants` block or as `as` values:
+
+```
+workflow  execution  input  output  env  loop  event
+```
+
+A workflow using a reserved name as a participant identifier will be rejected at parse time.
+
+---
+
+## Complete example
+
+A workflow that uses all three definition modes together:
+
+```yaml
+id: review-pipeline
+name: Review Pipeline
+version: "1"
+
+participants:
+  # reusable — referenced twice in the flow
+  coder:
+    type: exec
+    run: ./code.sh
+    onError: retry
+    retry:
+      max: 2
+      backoff: 2s
+
+  reviewer:
+    type: exec
+    run: ./review.sh
+    output:
+      approved:
+        type: boolean
+        required: true
+      score:
+        type: integer
+
+flow:
+  # anonymous — output chains into the loop
+  - type: exec
+    run: echo "starting review cycle"
+
+  - loop:
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - coder
+        - reviewer
+
+  # named inline — used once, output referenced downstream
+  - as: packager
+    type: exec
+    run: ./package.sh
+    input:
+      code: coder.output
+
+  - as: notifyResult
+    type: emit
+    event: "review.completed"
+    payload:
+      approved: reviewer.output.approved
+      score: reviewer.output.score
+      artifact: packager.output.path
+
+output:
+  approved: reviewer.output.approved
+  score: reviewer.output.score
+```

@@ -1,0 +1,169 @@
+---
+title: About
+description: History and motivation behind the project, as well as the roadmap and changelog.
+---
+
+## Background
+
+### The Problem
+
+Workflow orchestration tooling has evolved in many directions — CI/CD pipelines, data engineering DAGs, durable execution frameworks, visual automation builders — but none of them solve a fundamental need: a simple, declarative spec that a developer can write in minutes, read in seconds, and run anywhere.
+
+The existing landscape falls short in different ways:
+
+| Tool | Original purpose | Where it fails |
+|------|-----------------|----------------|
+| Argo Workflows | CI/CD on Kubernetes | Extreme complexity. YAML that reads like an algorithm. Turing-complete DSL disguised as config. |
+| Tekton | Cloud-native CI/CD | Same complexity problem as Argo, with additional CRD overhead. |
+| GitHub Actions | CI/CD for GitHub | Vendor lock-in. No real conditional loops — workarounds require unrolling or recursive reusable workflows. |
+| Temporal / Inngest | Durable workflows | Code-first (Go, TypeScript, Python SDKs). The code IS the spec — no declarative layer. |
+| Airflow / Prefect | Data pipelines | Python-first. DAGs are acyclic by definition — conditional loops are architecturally impossible without recursive sub-DAG hacks. |
+| n8n / Make | Visual automation | Visual-first, JSON-heavy specs. Loop constructs require JavaScript function nodes and circular connections. Specs are unreadable as text. |
+| Lobster | Shell automation | Intentionally minimal. Linear pipelines with approval gates, but no loops, no parallelism, no conditionals. |
+| Ralph Orchestrator | Agent loop framework | Event-driven with implicit flow. The execution order emerges from event routing — determinism is partial, not guaranteed. |
+
+### The Gap
+
+```
+What developers want:    Write a flow in 5 minutes, run it anywhere.
+What tools offer:        200-line YAML or a language-specific SDK.
+```
+
+No existing tool solves: **simple declarative spec + runtime-agnostic execution + first-class control flow (loops, conditionals, parallelism)**.
+
+### Design Exploration
+
+Three approaches were evaluated before arriving at the current design:
+
+**Approach 1: Extend an existing format (Argo).** Argo's YAML is expressive but its power came from incremental feature additions over 6+ years, resulting in a DSL that is effectively Turing-complete. A conditional loop in Argo requires template recursion, manual iteration counters, and string-interpolated type casting — 13+ lines for what should be 6.
+
+**Approach 2: Mermaid as executable spec.** Mermaid sequence diagrams already have `loop`, `par`, and `alt` constructs. The DX for reading and writing is excellent, and diagrams render natively in GitHub, Notion, and VS Code. However, extending Mermaid for real workflow concerns (retry policies, timeouts, error handling, typed variables) requires hacks — `Note` blocks for config, `$var` for expressions — and creates a custom parser that is as proprietary as a new YAML format, just disguised as something familiar.
+
+**Approach 3: Minimal custom YAML (chosen).** A new format, intentionally constrained, inspired by Mermaid's visual clarity but with the extensibility and tooling ecosystem of YAML. The tradeoff: a new DSL to learn, but one designed to be readable in 5 seconds and writable in 5 minutes.
+
+---
+
+## Design Principles
+
+1. **Readable in 5 seconds** — Any developer understands the flow by glancing at the spec. No indirection, no template references, no implicit ordering.
+
+2. **Minimal by default** — Features are only added when absolutely necessary. The DSL resists complexity. If something can be solved with an existing primitive, a new one is not introduced.
+
+3. **Convention over configuration** — Sensible defaults everywhere. Explicit override when needed. A workflow with zero configuration still works.
+
+4. **Steps are steps** — Scripts, HTTP calls, human approvals, sub-workflows — all are treated as participants with the same interface: input in, output out.
+
+5. **String by default** — Every participant receives and returns strings unless a schema is explicitly defined. Like stdin/stdout — the universal interface. This allows any content type: plain text, JSON, XML, binary.
+
+6. **Runtime-agnostic** — The DSL defines WHAT happens and in WHAT ORDER. The runtime decides HOW. The spec does not assume a specific execution environment, programming language, or infrastructure.
+
+7. **Deterministic flow** — The execution order is explicit and predictable. The flow is what is written — no implicit routing, no emergent ordering from events.
+
+8. **Reuse proven standards** — The DSL does not reinvent what already works. Expressions use Google CEL (battle-tested in Kubernetes, Firebase, and Envoy). Schemas use JSON Schema (the industry standard for data validation). YAML is the format (universal in DevOps and infrastructure). When a well-adopted standard exists for a problem, use it — don't build a proprietary alternative.
+
+---
+
+## Why CEL for expressions
+
+All dynamic values in duckflux — conditions, guards, input mappings, payload values — use **Google CEL (Common Expression Language)**. CEL is a non-Turing-complete expression language created by Google for safe, fast evaluation in declarative configurations.
+
+**Runtime-agnostic.** Official implementations exist in Go (`google/cel-go`), with community libraries in Rust and JavaScript. This aligns with the DSL's principle of not being tied to any specific runtime language.
+
+**Sandboxed by design.** CEL has no I/O, no infinite loops, no side effects. An expression cannot read files, make network calls, or modify state. It can only evaluate data that is explicitly provided to it.
+
+**Type-checked at parse time.** Type errors are detected before execution. A condition like `retries > "three"` (comparing int to string) fails at parse time, not at runtime in the middle of a workflow.
+
+**Familiar syntax.** CEL looks like C/JS/Python. Developers already know how to read `approved == false && retries < 3`. There is no new syntax to learn for 90% of use cases.
+
+**Industry adoption.** CEL is used in Kubernetes admission policies, Google Cloud IAM conditions, Firebase security rules, and Envoy proxy configurations. It is not an obscure choice — it is a battle-tested standard for exactly this use case.
+
+Alternatives considered and rejected:
+
+- **`eval()` / JavaScript expressions** — Ties the spec to a single runtime language. JS semantics (truthiness, type coercion, `==` vs `===`) leak into the DSL. Security surface is large even with sandboxing.
+- **Custom mini-DSL** — Portable, but every function (string operations, list comprehensions, type conversions) becomes an implementation task. CEL provides all of this out of the box.
+- **JSONPath / JMESPath** — Good for data queries, poor for logic. `&&`, `||`, and comparison operators are either missing or awkward.
+
+---
+
+## Comparisons
+
+### The Same Scenario Across Tools
+
+To illustrate the DX difference, here is the same workflow implemented in duckflux and competing tools. The scenario: a coder implements, a reviewer reviews, if not approved repeat up to 3 times, then deploy if approved.
+
+#### duckflux (~10 lines of flow)
+
+```yaml
+flow:
+  - loop:
+      until: reviewer.output.approved == true
+      max: 3
+      steps:
+        - coder
+        - reviewer
+  - if:
+      condition: reviewer.output.approved == true
+      then:
+        - deploy
+```
+
+Participants are defined separately (or inline). The flow itself is linear, readable, and self-contained.
+
+#### Argo Workflows (~40 lines)
+
+```yaml
+steps:
+  - - name: bc
+      template: bc-iteration
+  - - name: recurse
+      template: bc-loop
+      when: >-
+        {{steps.bc.outputs.parameters.approved}} == "false" &&
+        {{inputs.parameters.iteration}} < 3
+      arguments:
+        parameters:
+          - name: iteration
+            value: "{{=asInt(inputs.parameters.iteration) + 1}}"
+```
+
+Requires template recursion, manual iteration counters, and string-interpolated type casting. The developer must understand three separate concepts (templates, parameter passing, expression syntax) to read a simple loop.
+
+#### GitHub Actions (~50+ lines)
+
+GitHub Actions has no conditional loop construct. The workaround is to unroll iterations manually with `if` guards on each step, or use recursive reusable workflows in separate files. The deploy condition becomes a monstrous OR chain across all possible reviewer outputs.
+
+#### n8n (~70 lines JSON)
+
+n8n has no loop primitive. The workaround requires a JavaScript Function node for iteration counting, an IF node for control flow, and circular node connections. The reference syntax `$node['Reviewer'].json.approved` is verbose and fragile. The visual editor makes it intuitive, but the exported JSON spec is unreadable.
+
+#### Temporal (~35 lines Go)
+
+```go
+for i := 0; i < 3; i++ {
+    err := workflow.ExecuteActivity(ctx, CoderActivity, ...).Get(ctx, &coderOutput)
+    // ...
+    if reviewerOutput.Approved { break }
+}
+```
+
+Clear for Go developers, but it is code — not a spec. Requires compilation, worker deployment, and a Temporal server.
+
+#### Airflow (impossible natively)
+
+Airflow DAGs are acyclic by definition. Conditional loops are architecturally impossible without sub-DAGs or the DAG triggering itself recursively.
+
+### Comparative Summary
+
+| Feature | duckflux | Argo | GHA | n8n | Temporal | Airflow |
+|---------|---------|------|-----|-----|----------|---------|
+| Conditional loop | native | template recursion | unroll | JS hack | code | impossible |
+| Fixed loop | native | native | no | JS hack | code | no |
+| Parallelism | native | native | jobs | visual | goroutines | native |
+| Conditional branch | native | when | if | IF node | code | BranchOperator |
+| Guard (when) | native | when | if per step | no | code | no |
+| Events (emit/wait) | native | no | no | webhook node | signals | sensors |
+| Error handling | onError + retry + fallback | retryStrategy | continue-on-error | no | code | no |
+| Timeout | global + per-step | per-step | per-job | per-node | per-activity | per-task |
+| Sub-workflows | native | template ref | reusable workflows | sub-workflow node | child workflow | SubDagOperator |
+| Inline participants | native | no | no | no | no | no |
+| Spec is readable | yes | partially | partially | no (JSON) | no (code) | no (Python) |

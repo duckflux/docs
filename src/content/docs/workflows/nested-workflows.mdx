@@ -1,0 +1,303 @@
+---
+title: Nested Workflows
+description: Compose and reuse workflows by calling other workflow files as steps.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+duckflux workflows can call other workflow files as steps, enabling composition and reuse. A sub-workflow is just another participant — it receives inputs, executes its own flow, and returns output — the same interface as any other step.
+
+This is the primary mechanism for breaking large workflows into manageable, testable, and reusable pieces.
+
+---
+
+## The `workflow` participant type
+
+A participant of type `workflow` delegates execution to another `.flow.yaml` file:
+
+```yaml
+participants:
+  reviewCycle:
+    type: workflow
+    path: ./review-loop.flow.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+      branch: workflow.inputs.branch
+```
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | Must be `workflow`. |
+| `path` | string | Yes | Path to the sub-workflow file. Resolved relative to the parent workflow's directory. |
+| `input` | map | No | Input values passed to the sub-workflow. Values are CEL expressions. |
+| `timeout` | duration | No | Maximum total time for the sub-workflow to complete. |
+| `onError` | string | No | Error strategy applied to the sub-workflow as a whole. |
+
+---
+
+## Two ways to define a sub-workflow step
+
+### As a named participant (reusable)
+
+Define the sub-workflow in the `participants` block and reference it by name in the `flow`. Use this when the same sub-workflow is called more than once, or when you want to keep the flow clean and readable:
+
+```yaml
+participants:
+  reviewCycle:
+    type: workflow
+    path: ./review-loop.flow.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+      branch: workflow.inputs.branch
+
+flow:
+  - coder
+  - reviewCycle
+  - deploy
+```
+
+### Inline in the flow
+
+Define the sub-workflow directly inside the `flow` using `as` for its name. Use this for one-off sub-workflow calls that do not need to be reused:
+
+```yaml
+flow:
+  - coder
+  - as: reviewCycle
+    type: workflow
+    path: ./review-loop.flow.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+  - deploy
+```
+
+The `as` field is optional. An inline participant without `as` is **anonymous** — its output is only accessible via the [implicit I/O chain](/workflows/inputs-outputs/#implicit-io-chain-piping) and cannot be referenced by name in CEL expressions.
+
+<Aside type="tip">
+  Inline participants are single-use by definition — they exist only at that point in the flow and cannot be referenced elsewhere. If you need to call the same sub-workflow from multiple places, define it in the `participants` block instead.
+</Aside>
+
+---
+
+## Passing inputs
+
+The `input` field maps data from the parent workflow to the sub-workflow's declared inputs. Values are [CEL expressions](/workflows/variables-and-expressions/) and can reference any variable available at that point in the flow:
+
+```yaml
+participants:
+  analyze:
+    type: workflow
+    path: ./analyze.flow.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+      commit: coder.output.commitSha
+      threshold: "7"
+```
+
+- `workflow.inputs.repoUrl` — from the parent workflow's inputs.
+- `coder.output.commitSha` — from a previous step's output.
+- `"7"` — a literal string value.
+
+The sub-workflow receives these as its own `workflow.inputs.*` variables. Any inputs not provided default to the sub-workflow's declared `default` values, if set.
+
+<Aside>
+  Inputs are always strings unless the sub-workflow declares a typed schema. This follows the [string-by-default](/workflows/inputs-outputs/) principle — the caller and callee agree on the interface through the sub-workflow's `inputs` block.
+</Aside>
+
+---
+
+## Accessing outputs
+
+After a sub-workflow step completes, its output is accessible in the parent workflow as `<step>.output.*`, exactly like any other participant:
+
+```yaml
+flow:
+  - reviewCycle
+  - deploy:
+      when: reviewCycle.output.approved == true
+```
+
+The output exposed to the parent is whatever the sub-workflow defines in its own `output` block. If the sub-workflow has no `output` block, the output of its last executed step is used.
+
+```yaml
+# review-loop.flow.yaml
+flow:
+  - loop:
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - reviewer
+        - coder:
+            when: reviewer.output.approved == false
+
+output:
+  approved: reviewer.output.approved
+  score: reviewer.output.score
+  rounds: loop.iteration
+```
+
+In the parent workflow, `reviewCycle.output.approved`, `reviewCycle.output.score`, and `reviewCycle.output.rounds` are all accessible.
+
+---
+
+## Behavior and isolation
+
+Sub-workflows behave like any other step from the parent's perspective, but run with their own isolated context:
+
+- **Isolated `execution.context`** — the sub-workflow gets its own scratchpad, separate from the parent. Data does not leak between them.
+- **`onError` and `timeout` apply to the whole sub-workflow** — if the sub-workflow exceeds its timeout or fails, the parent's `onError` strategy for that step applies.
+- **Nesting is supported** — a sub-workflow can itself call other sub-workflows. There is no hard depth limit, but deep nesting adds complexity.
+- **Path resolution** — paths in `path` are resolved relative to the parent workflow file's directory, not the working directory at runtime.
+
+<Aside type="caution">
+  Circular references (workflow A calls workflow B which calls workflow A) are not detected at parse time by JSON Schema validation — they will cause a runtime error. The linter (`duckflux lint`) performs this check. See [Tooling](/tooling/).
+</Aside>
+
+---
+
+## Sub-workflows in other constructs
+
+Since sub-workflow steps follow the same interface as all other participants, they work inside any flow construct.
+
+### Inside a loop
+
+```yaml
+flow:
+  - loop:
+      as: attempt
+      until: reviewCycle.output.approved == true
+      max: 3
+      steps:
+        - as: reviewCycle
+          type: workflow
+          path: ./review-cycle.flow.yaml
+          input:
+            round: attempt.iteration
+```
+
+### Inside a conditional
+
+```yaml
+flow:
+  - runTests
+  - if:
+      condition: runTests.output.passed == true
+      then:
+        - as: deploy
+          type: workflow
+          path: ./deploy.flow.yaml
+          input:
+            env: workflow.inputs.targetEnv
+      else:
+        - as: notify
+          type: workflow
+          path: ./notify-failure.flow.yaml
+```
+
+### Inside parallel
+
+```yaml
+flow:
+  - parallel:
+      - as: lintCheck
+        type: workflow
+        path: ./lint.flow.yaml
+      - as: securityScan
+        type: workflow
+        path: ./security.flow.yaml
+      - as: buildArtifact
+        type: workflow
+        path: ./build.flow.yaml
+```
+
+All three sub-workflows run concurrently. Their outputs are available after the `parallel` block completes.
+
+---
+
+## Complete example
+
+A parent pipeline that orchestrates three sub-workflows — a review cycle, a build, and a deployment — using outputs from each step to drive the next:
+
+```yaml
+# pipeline.flow.yaml
+id: release-pipeline
+name: Release Pipeline
+version: "1"
+
+defaults:
+  timeout: 30m
+
+inputs:
+  branch:
+    type: string
+    default: "main"
+  environment:
+    type: string
+    default: "staging"
+  max_review_rounds:
+    type: integer
+    default: 5
+
+participants:
+  reviewCycle:
+    type: workflow
+    path: ./review-cycle.flow.yaml
+    input:
+      branch: workflow.inputs.branch
+      maxRounds: workflow.inputs.max_review_rounds
+    timeout: 20m
+    onError: fail
+
+  buildArtifact:
+    type: workflow
+    path: ./build.flow.yaml
+    input:
+      branch: workflow.inputs.branch
+      commitSha: reviewCycle.output.commitSha
+    timeout: 10m
+
+  deployRelease:
+    type: workflow
+    path: ./deploy.flow.yaml
+    input:
+      artifact: buildArtifact.output.artifactUrl
+      environment: workflow.inputs.environment
+    timeout: 15m
+
+  notifySuccess:
+    type: http
+    url: https://hooks.example.com/success
+    method: POST
+    onError: skip
+
+  notifyFailure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+
+flow:
+  - reviewCycle
+
+  - buildArtifact:
+      when: reviewCycle.output.approved == true
+
+  - deployRelease:
+      when: buildArtifact.status == "success"
+
+  - if:
+      condition: deployRelease.status == "success"
+      then:
+        - notifySuccess
+      else:
+        - notifyFailure
+
+output:
+  approved: reviewCycle.output.approved
+  artifact: buildArtifact.output.artifactUrl
+  deployed: deployRelease.status
+```
+
+Each sub-workflow encapsulates its own logic, inputs, and outputs. The parent pipeline remains concise and focused on orchestration — routing data between steps and making high-level decisions.

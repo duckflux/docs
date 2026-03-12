@@ -1,0 +1,175 @@
+---
+title: Exploring participants
+description: Learn about participant types and definition modes — the building blocks of every duckflux workflow.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every step in a duckflux workflow is a **participant** — the atomic unit of work. Participants receive input, do something, and produce output. The `flow` is just an ordered sequence of participants.
+
+There are two dimensions to understand: **how you define** a participant (anonymous, named inline, or reusable) and **what type** it is (exec, http, mcp, workflow, emit).
+
+---
+
+## Definition modes
+
+### Anonymous inline
+
+The simplest form. Write the participant directly in the `flow` without a name:
+
+```yaml
+flow:
+  - type: exec
+    run: curl -s https://api.example.com/data
+
+  - type: exec
+    run: ./process.sh
+```
+
+Each step's output is automatically passed to the next step — like Unix pipes. Anonymous participants are quick to write, but their output can't be referenced by name in later steps.
+
+### Named inline
+
+Add `as` to give a step an addressable name, while still defining it inline:
+
+```yaml
+flow:
+  - as: build
+    type: exec
+    run: npm run build
+
+  - as: deploy
+    type: exec
+    run: ./deploy.sh
+    input: build.output.artifactPath
+```
+
+Named steps are addressable in CEL expressions (`build.output`, `build.status`, etc.). Use this when you need to reference the result downstream, but the step is only used once.
+
+### Reusable participants
+
+Define steps in the top-level `participants` block and reference them by name in the `flow`. This is ideal for steps that appear more than once, or have complex configuration:
+
+```yaml
+participants:
+  test:
+    type: exec
+    run: npm test
+    timeout: 5m
+    onError: retry
+    retry:
+      max: 2
+      backoff: 5s
+
+flow:
+  - test
+  - deploy
+  - test           # run again after deploy
+```
+
+Reusable participants keep the `flow` readable and the configuration in one place.
+
+---
+
+## Comparing the three modes
+
+| | Anonymous | Named inline | Reusable |
+|---|---|---|---|
+| Defined in | `flow` (no `as`) | `flow` (with `as`) | `participants` block |
+| Output addressable by name | No | Yes | Yes |
+| Can appear multiple times | No | No | Yes |
+| Best for | Simple one-off steps | One-off named steps | Shared steps, complex config |
+
+<Aside>
+  See [Participants](/workflows/participants/) for the full reference — including the implicit I/O chain, reserved names, and how to use all three modes together.
+</Aside>
+
+---
+
+## Participant types
+
+The `type` field determines how a participant executes:
+
+| Type | What it does |
+|------|-------------|
+| `exec` | Runs a shell command. Output is the command's stdout. |
+| `http` | Makes an HTTP request. Supports dynamic URLs, headers, and body via CEL. |
+| `mcp` | Invokes a tool on an MCP server. |
+| `workflow` | Runs another `.flow.yaml` file as a sub-workflow. |
+| `emit` | Publishes an event to the workflow's event hub. |
+
+### `exec`
+
+The most common type. Runs any shell command:
+
+```yaml
+participants:
+  build:
+    type: exec
+    run: npm run build
+    timeout: 10m
+```
+
+If the command outputs valid JSON, it's parsed automatically — fields become accessible as `build.output.<field>` in downstream expressions.
+
+### `http`
+
+Makes an HTTP request to an external URL. All field values support CEL expressions:
+
+```yaml
+participants:
+  notify:
+    type: http
+    url: https://hooks.example.com/deploy
+    method: POST
+    headers:
+      Authorization: '"Bearer " + env.API_TOKEN'
+    body:
+      status: deploy.output.status
+    onError: skip
+```
+
+### `mcp`
+
+Delegates work to an MCP server tool:
+
+```yaml
+participants:
+  reviewer:
+    type: mcp
+    server: claude
+    tool: code_review
+    input:
+      code: coder.output
+```
+
+### `workflow`
+
+Embeds another workflow file as a step. Paths are resolved relative to the parent file:
+
+```yaml
+participants:
+  reviewCycle:
+    type: workflow
+    path: ./review-loop.flow.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+```
+
+### `emit`
+
+Publishes an event. By default fire-and-forget; use `ack: true` to block until delivery:
+
+```yaml
+- as: notify
+  type: emit
+  event: "deploy.completed"
+  payload:
+    status: deploy.output.status
+  ack: true
+  timeout: 10s
+```
+
+<Aside>
+  See [Participant types](/workflows/participant-types/) for the full field reference, examples, and guidance on choosing the right type for each situation.
+</Aside>

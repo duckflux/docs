@@ -1,0 +1,230 @@
+---
+title: Conditionals
+description: Conditional flow control in workflows with if/then/else and guard conditions with when.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+duckflux provides two mechanisms for conditional flow control: the `if/then/else` block for multi-step branching, and the `when` field as a guard condition on individual steps.
+
+---
+
+## `if/then/else` — Conditional branching
+
+The `if` block evaluates a [CEL](/workflows/variables-and-expressions/) expression and routes execution to one of two branches:
+
+```yaml
+flow:
+  - stepA
+  - if:
+      condition: stepA.output.score > 7
+      then:
+        - stepB
+        - stepC
+      else:
+        - stepD
+```
+
+The `else` branch is optional. If omitted and the condition is false, execution continues to the next step after the `if` block.
+
+```yaml
+flow:
+  - analyze
+  - if:
+      condition: analyze.output.hasIssues == true
+      then:
+        - fix
+        - reanalyze
+  - deploy
+```
+
+In the example above, if `analyze.output.hasIssues` is `false`, execution jumps directly to `deploy`.
+
+### Branches with multiple steps
+
+Each branch (`then` and `else`) accepts a sequence of steps, including nested control flow constructs:
+
+```yaml
+flow:
+  - runTests
+  - if:
+      condition: runTests.output.passed == true
+      then:
+        - buildArtifact
+        - if:
+            condition: workflow.inputs.env == "production"
+            then:
+              - deployProd
+            else:
+              - deployStaging
+        - notifySuccess
+      else:
+        - notifyFailure
+        - openIssue
+```
+
+<Aside type="tip">
+  Nested conditionals are supported, but use them sparingly. Deeply nested flows tend to be hard to read — consider extracting complex branches into [sub-workflows](/workflows/nested-workflows/).
+</Aside>
+
+---
+
+## `when` — Guard condition
+
+The `when` field on a flow step is a CEL precondition that determines whether that step should execute. If the expression evaluates to `false`, the step is marked as `skipped` and execution continues.
+
+```yaml
+flow:
+  - coder
+  - reviewer
+  - deploy:
+      when: reviewer.output.approved == true
+  - notify:
+      when: reviewer.output.approved == false
+```
+
+`when` can be used on any participant reference in the flow:
+
+```yaml
+flow:
+  - fetchData
+  - processData:
+      when: fetchData.output.records.size() > 0
+  - generateReport
+```
+
+### `when` inside loops
+
+Guard conditions are especially useful inside loops to control which steps execute on each iteration:
+
+```yaml
+flow:
+  - loop:
+      as: attempt
+      max: 3
+      steps:
+        - coder
+        - reviewer:
+            when: attempt.index > 0
+```
+
+In this example, `reviewer` is skipped on the first iteration (`attempt.index == 0`) and runs on all subsequent ones.
+
+---
+
+## `when` vs `if` — When to use each
+
+| | `when` | `if/then/else` |
+|---|---|---|
+| Scope | A single step | One or more steps per branch |
+| `else` | No | Yes |
+| Readability | High for simple guards | Better for explicit branching |
+| Typical use | Skip or run a single step | Route execution to distinct paths |
+
+**Use `when`** when you simply want to skip or run a step based on a condition:
+
+```yaml
+- deploy:
+    when: reviewer.output.approved == true
+```
+
+**Use `if/then/else`** when the branch involves multiple steps or explicit alternative paths:
+
+```yaml
+- if:
+    condition: reviewer.output.approved == true
+    then:
+      - deploy
+      - notifySuccess
+    else:
+      - rollback
+      - notifyFailure
+```
+
+<Aside>
+  Both accept any valid CEL expression. Access outputs from previous steps via `<participant>.output.<field>`, workflow inputs via `workflow.inputs.<field>`, and execution variables via `execution.*`. See [Variables and Expressions](/workflows/variables-and-expressions/) for the full reference.
+</Aside>
+
+---
+
+## Complete example
+
+A code review pipeline combining `if/then/else`, `when`, and a conditional loop:
+
+```yaml
+id: code-review
+name: Code Review Pipeline
+version: "1"
+
+defaults:
+  timeout: 5m
+
+inputs:
+  branch:
+    type: string
+    default: "main"
+  max_rounds:
+    type: integer
+    default: 3
+
+participants:
+  coder:
+    type: exec
+    run: echo '{"status":"coded"}'
+    onError: retry
+    retry:
+      max: 2
+      backoff: 1s
+
+  reviewer:
+    type: exec
+    run: echo '{"approved":true,"score":8}'
+
+  tests:
+    type: exec
+    run: npm test
+    onError: skip
+
+  lint:
+    type: exec
+    run: npm run lint
+    onError: skip
+
+  notifySuccess:
+    type: http
+    url: https://hooks.example.com/success
+    method: POST
+    onError: skip
+
+  notifyFailure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+
+flow:
+  - coder
+
+  - loop:
+      until: reviewer.output.approved == true
+      max: 3
+      steps:
+        - reviewer
+        - coder:
+            when: reviewer.output.approved == false
+
+  - parallel:
+      - tests
+      - lint
+
+  - if:
+      condition: tests.status == "success" && lint.status == "success"
+      then:
+        - notifySuccess
+      else:
+        - notifyFailure
+
+output:
+  approved: reviewer.output.approved
+  score: reviewer.output.score
+```
