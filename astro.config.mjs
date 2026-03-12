@@ -24,9 +24,9 @@ export default defineConfig({
 			],
 			plugins: [
 				starlightDocSearch({
-					appId: 'YOUR_APP_ID',
-					apiKey: 'YOUR_SEARCH_API_KEY',
-					indexName: 'YOUR_INDEX_NAME',
+					appId: '37ZUDU2YKV',
+					apiKey: '6a1e5ac04d0fbbc986ad98fcfb85cc14',
+					indexName: 'Duckflux Docs',
 				}),
 			],
 			customCss: ['./src/styles/custom.css'],
