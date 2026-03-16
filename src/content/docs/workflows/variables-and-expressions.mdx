@@ -1,0 +1,329 @@
+---
+title: Variables and expressions
+description: CEL expressions and runtime variables available in duckflux workflows — conditions, input mappings, guards, and the full variable reference.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+All dynamic values in a duckflux workflow — conditions, guard clauses, input mappings, payload values — are written as **CEL expressions** (Common Expression Language). CEL is a simple, safe, and fast expression language developed by Google and used in production systems like Kubernetes, Firebase, and Envoy.
+
+---
+
+## Where expressions are used
+
+Expressions appear in any field that needs to reference runtime data:
+
+| Field | Example |
+|-------|---------|
+| `if` condition | `condition: tests.status == "success" && lint.status == "success"` |
+| `when` guard | `when: reviewer.output.approved == true` |
+| `loop` exit condition | `until: reviewer.output.approved == true` |
+| `input` mapping | `task: workflow.inputs.taskDescription` |
+| `http` url, headers, body | `url: '"https://api.example.com/users/" + workflow.inputs.userId'` |
+| `emit` payload | `payload: coder.output` |
+| `wait` match condition | `match: event.requestId == submitRequest.output.id` |
+| `cwd` path | `cwd: workflow.inputs.packagePath` |
+
+<Aside type="tip">
+  CEL expressions are always **strings** in YAML. When an expression contains special characters or YAML operators, wrap it in quotes.
+</Aside>
+
+---
+
+## Runtime variables
+
+The following variables are available in any expression within a workflow.
+
+### `workflow` — Workflow definition
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `workflow.id` | string | Workflow definition identifier. |
+| `workflow.name` | string | Human-readable name. |
+| `workflow.version` | string | Definition version. |
+| `workflow.inputs` | map | Input parameters as defined in the `inputs` field. |
+| `workflow.output` | string or map | Workflow output as defined in the `output` field. |
+
+```yaml
+flow:
+  - as: clone
+    type: exec
+    run: git clone
+    input:
+      repo: workflow.inputs.repoUrl
+      branch: workflow.inputs.branch
+```
+
+### `execution` — Current run metadata
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `execution.id` | string | Unique identifier for this execution. |
+| `execution.number` | int | Sequential execution number. |
+| `execution.startedAt` | timestamp | Execution start time. |
+| `execution.status` | string | Current status: `running`, `success`, `failure`. |
+| `execution.context` | map | Read/write shared data scratchpad. |
+| `execution.cwd` | string | Resolved base working directory. |
+
+`execution.context` is the only writable shared state in a workflow — useful for passing data across iterations in a loop or between branches:
+
+```yaml
+flow:
+  - loop:
+      max: 5
+      steps:
+        - coder
+        - reviewer:
+            when: execution.context.lastScore < 8
+```
+
+### `input` and `output` — Participant scope
+
+Within a participant's context, `input` and `output` refer to **that participant's own** I/O — not the workflow's.
+
+| Variable | Description |
+|----------|-------------|
+| `input` | The resolved input received by the current participant (read-only). |
+| `output` | The output produced by the current participant (write-only, set by the runtime). |
+
+```yaml
+participants:
+  notify:
+    type: http
+    url: https://hooks.example.com/done
+    method: POST
+    body: input   # the chained input received by this participant
+```
+
+These are distinct from `workflow.inputs` (the workflow's declared input parameters) and `workflow.output` (the workflow's final result).
+
+### `env` — Environment variables
+
+Read-only. Injected by the runtime. Never defined in YAML.
+
+```yaml
+participants:
+  fetchData:
+    type: http
+    url: https://api.example.com/data
+    headers:
+      Authorization: '"Bearer " + env.API_KEY'
+```
+
+### `<step>` — Named participant result
+
+Every **named** participant (reusable or named inline) is accessible by its name after it executes:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `<step>.output` | string or map | Step output. Auto-parsed as JSON if valid. |
+| `<step>.status` | string | `success`, `failure`, or `skipped`. |
+| `<step>.startedAt` | timestamp | Step start time. |
+| `<step>.finishedAt` | timestamp | Step end time. |
+| `<step>.duration` | duration | Execution duration. |
+| `<step>.retries` | int | Number of execution attempts. |
+| `<step>.error` | string | Error message (when `status == "failure"`). |
+| `<step>.cwd` | string | Effective working directory (`exec` only). |
+
+```yaml
+flow:
+  - reviewer
+  - deploy:
+      when: reviewer.output.approved == true && reviewer.output.score >= 8
+  - if:
+      condition: deploy.status == "failure"
+      then:
+        - rollback
+```
+
+<Aside>
+  If a step's stdout is valid JSON, the runtime parses it automatically. Fields become accessible as `<step>.output.<field>` — no extra configuration needed.
+</Aside>
+
+### `loop` — Iteration context
+
+Available only inside `loop` blocks. Renamed via the `as` field on the loop.
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `loop.index` | int | 0-based iteration index. |
+| `loop.iteration` | int | 1-based iteration number. |
+| `loop.first` | bool | `true` on the first iteration. |
+| `loop.last` | bool | `true` on the last iteration (only when `max` is defined). |
+
+```yaml
+flow:
+  - loop:
+      as: round
+      max: 5
+      steps:
+        - coder
+        - reviewer:
+            when: round.index > 0   # skip reviewer on the first iteration
+```
+
+### `event` — Received event payload
+
+Available only inside `wait` blocks when waiting for an event. Contains the received event payload as a map.
+
+```yaml
+flow:
+  - submitRequest
+  - wait:
+      event: "approval.response"
+      match: event.requestId == submitRequest.output.id && event.approved == true
+      timeout: 24h
+```
+
+### `now` — Current timestamp
+
+Available anywhere. Returns the current timestamp at evaluation time.
+
+```yaml
+flow:
+  - wait:
+      until: now >= timestamp("2026-06-01T09:00:00Z")
+      poll: 1m
+      timeout: 48h
+```
+
+---
+
+## Variable summary
+
+```
+workflow.*              Workflow definition metadata
+workflow.inputs.*       Workflow input parameters
+workflow.output         Workflow final output
+execution.*             Current run metadata
+execution.context.*     Shared read/write scratchpad
+input                   Current participant's input (chain + explicit, merged)
+output                  Current participant's output (write-only)
+env.*                   Environment variables (read-only)
+<step>.*                Named participant result
+loop.*                  Loop iteration context (or renamed via 'as')
+event                   Event payload (inside wait blocks)
+now                     Current timestamp
+```
+
+---
+
+## CEL expression basics
+
+CEL supports standard comparison and logic operators, string and collection operations, and type conversions.
+
+### Comparisons and logic
+
+```cel
+reviewer.output.approved == true
+tests.status != "failure"
+reviewer.output.score >= 8 && lint.status == "success"
+deploy.status == "success" || deploy.status == "skipped"
+```
+
+### Strings
+
+```cel
+workflow.inputs.branch.startsWith("feat/")
+workflow.inputs.env == "production"
+"Bearer " + env.API_TOKEN
+coder.output.message.contains("error")
+```
+
+### Collections
+
+```cel
+reviewer.output.tags.size() > 0
+"admin" in reviewer.output.roles
+workflow.inputs.targets.filter(t, t.startsWith("prod"))
+```
+
+### Type conversions
+
+```cel
+int(reviewer.output.score)
+string(execution.number)
+timestamp(workflow.inputs.scheduledAt)
+```
+
+### Timestamps and durations
+
+```cel
+now >= timestamp("2026-06-01T09:00:00Z")
+execution.startedAt + duration("1h")
+deploy.finishedAt - deploy.startedAt
+```
+
+### Full standard library
+
+A conforming runtime supports the full CEL standard library:
+
+| Category | Functions |
+|----------|-----------|
+| Strings | `contains`, `startsWith`, `endsWith`, `matches` (RE2), `size`, `lowerAscii`, `upperAscii`, `replace`, `split`, `join` |
+| Lists and maps | `size`, `in`, `+` (concatenation), `[]` (index/key access) |
+| Macros | `has`, `all`, `exists`, `exists_one`, `filter`, `map` |
+| Type conversions | `int()`, `uint()`, `double()`, `string()`, `bool()`, `bytes()`, `timestamp()`, `duration()` |
+| Timestamps | Arithmetic, comparisons, component access |
+
+---
+
+## Common patterns
+
+### Check a step's status before proceeding
+
+```yaml
+- deploy:
+    when: build.status == "success"
+```
+
+### Access a JSON output field
+
+```yaml
+# If reviewer outputs: {"approved": true, "score": 9}
+- when: reviewer.output.approved == true && reviewer.output.score >= 7
+```
+
+### Use a workflow input in a URL
+
+```yaml
+participants:
+  fetchUser:
+    type: http
+    url: '"https://api.example.com/users/" + workflow.inputs.userId'
+    method: GET
+```
+
+### Use an environment variable in a header
+
+```yaml
+participants:
+  callApi:
+    type: http
+    url: https://api.example.com/data
+    headers:
+      Authorization: '"Bearer " + env.API_SECRET'
+```
+
+### Gate a step on iteration index inside a loop
+
+```yaml
+flow:
+  - loop:
+      as: attempt
+      max: 3
+      steps:
+        - coder
+        - reviewer:
+            when: attempt.index > 0
+```
+
+### Wait until a specific time
+
+```yaml
+flow:
+  - wait:
+      until: now >= timestamp("2026-06-01T09:00:00Z")
+      poll: 5m
+      timeout: 72h
+```

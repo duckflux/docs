@@ -1,0 +1,59 @@
+/* Custom Starlight overrides — matching duckflux.openvibes.tech palette */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700&display=swap');
+
+/* ─── Dark theme (default) ─── */
+:root {
+  /* Accent: duck gold — used for links, current-item highlight, badges */
+  --sl-color-accent-low: #2a1f00;      /* dark gold bg for badges/subtle highlights */
+  --sl-color-accent: #F5C518;          /* main accent */
+  --sl-color-accent-high: #ffe566;     /* lighter gold for hover states */
+
+  /* Gray scale: dark navy palette matching the site body gradient
+     Starlight uses gray-1 (lightest) → gray-7 (darkest) in dark mode.
+     gray-6/7 = page background, gray-5 = sidebar bg, gray-1/2 = text */
+  --sl-color-gray-1: #e0e6ed;          /* primary text */
+  --sl-color-gray-2: #b8c0cc;          /* secondary text */
+  --sl-color-gray-3: #6b7a8d;          /* muted text / borders */
+  --sl-color-gray-4: #384456;          /* subtle borders */
+  --sl-color-gray-5: #131a2a;          /* sidebar / card backgrounds */
+  --sl-color-gray-6: #0d1b2a;          /* deeper bg (matches --bg-deeper) */
+  --sl-color-gray-7: #0a0a1a;          /* main page bg (matches --bg-dark) */
+
+  --sl-color-white: #f0f4f8;
+  --sl-color-black: #0a0a1a;
+
+  /* Inverted text color for accent backgrounds (e.g. active sidebar item) */
+  --sl-color-text-invert: #0a0a1a;
+
+  /* Typography */
+  --__sl-font: 'Outfit', system-ui, sans-serif;
+  --__sl-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ─── Headings ─── */
+:root {
+  --sl-font: var(--__sl-font);
+  --sl-font-mono: var(--__sl-font-mono);
+}
+
+/* Force headings to monospace like the main site */
+.sl-markdown-content :is(h1, h2, h3, h4) {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ─── Body smoothing ─── */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── Sidebar refinements ─── */
+
+/* Sidebar group labels */
+.sidebar-content .top-level > li > details > summary,
+nav.sidebar .top-level > li > details > summary {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+}

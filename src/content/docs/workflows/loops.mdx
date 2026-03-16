@@ -1,0 +1,282 @@
+---
+title: Loops
+description: Repeat steps conditionally or a fixed number of times using the loop construct.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+duckflux provides a first-class `loop` construct for repeating steps — either until a [CEL](/workflows/variables-and-expressions/) condition becomes true, or a fixed number of times. Both modes can be combined for safety caps.
+
+---
+
+## The `loop` construct
+
+A `loop` block wraps a sequence of steps in the `flow` and controls how many times they repeat:
+
+```yaml
+flow:
+  - loop:
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - coder
+        - reviewer
+```
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `steps` | list | Yes | Steps to repeat on each iteration. |
+| `until` | CEL expression | One of `until` or `max` | Exit condition. Loop stops when this evaluates to `true`. |
+| `max` | integer | One of `until` or `max` | Maximum number of iterations. Loop stops after exactly N runs. |
+| `as` | string | No | Renames the loop context variable (default: `loop`). |
+
+<Aside type="caution">
+  At least one of `until` or `max` must be present. A loop with neither is rejected at parse time.
+</Aside>
+
+---
+
+## Conditional loop — `until`
+
+Repeats a set of steps until a CEL condition evaluates to `true`:
+
+```yaml
+flow:
+  - loop:
+      until: reviewer.output.approved == true
+      steps:
+        - coder
+        - reviewer
+```
+
+The condition is evaluated **after** each iteration. If it is `true` on the first check, the loop exits immediately and does not run again.
+
+<Aside type="caution">
+  A loop with only `until` and no `max` runs indefinitely until the condition is met. Always pair `until` with a `max` safety cap in production workflows.
+</Aside>
+
+---
+
+## Fixed loop — `max`
+
+Runs a set of steps exactly N times, with no exit condition:
+
+```yaml
+flow:
+  - loop:
+      max: 3
+      steps:
+        - stepA
+```
+
+This is equivalent to writing `stepA` three times in the flow, but more concise and without the repetition.
+
+---
+
+## Combining `until` and `max`
+
+Use both fields together to exit early when a condition is met, while still capping the total number of iterations as a safety measure:
+
+```yaml
+flow:
+  - loop:
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - coder
+        - reviewer
+```
+
+The loop exits as soon as either condition is satisfied — whichever comes first:
+- `reviewer.output.approved` becomes `true`, or
+- 5 iterations are completed.
+
+This is the recommended pattern for agentic review cycles, retry loops, and polling workflows.
+
+---
+
+## Loop context variables
+
+Inside a `loop` block, the following variables are available under the `loop` namespace:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `loop.index` | int | 0-based iteration index. `0` on the first iteration. |
+| `loop.iteration` | int | 1-based iteration number. `1` on the first iteration. |
+| `loop.first` | bool | `true` only on the first iteration. |
+| `loop.last` | bool | `true` on the last iteration. Only set when `max` is defined. |
+
+Use these in [CEL expressions](/workflows/variables-and-expressions/) within the loop's `steps`:
+
+```yaml
+flow:
+  - loop:
+      max: 5
+      steps:
+        - coder
+        - reviewer:
+            when: loop.index > 0
+```
+
+Here, `reviewer` is skipped on the first iteration (`loop.index == 0`) and runs on all subsequent ones.
+
+<Aside>
+  Step outputs inside a loop are **overwritten on each iteration** — they always reflect the most recent execution. If you need to preserve results across iterations, use `execution.context` as a scratchpad (see [Variables and Expressions](/workflows/variables-and-expressions/)).
+</Aside>
+
+---
+
+## Renaming the context with `as`
+
+By default the loop context is accessed via `loop.*`. Use the `as` field to give the context a semantic name — especially useful when loops are nested or the variable name should reflect the domain:
+
+```yaml
+flow:
+  - loop:
+      as: attempt
+      max: 3
+      steps:
+        - coder
+        - reviewer:
+            when: attempt.index > 0
+```
+
+With `as: attempt`, the variables become `attempt.index`, `attempt.iteration`, `attempt.first`, and `attempt.last` instead of the default `loop.*`.
+
+<Tabs>
+  <TabItem label="Default (loop.*)">
+    ```yaml
+    flow:
+      - loop:
+          max: 3
+          steps:
+            - coder
+            - reviewer:
+                when: loop.index > 0
+    ```
+  </TabItem>
+  <TabItem label="Renamed (as: attempt)">
+    ```yaml
+    flow:
+      - loop:
+          as: attempt
+          max: 3
+          steps:
+            - coder
+            - reviewer:
+                when: attempt.index > 0
+    ```
+  </TabItem>
+</Tabs>
+
+Both are functionally identical. The `as` field is purely for readability.
+
+<Aside type="tip">
+  Choose a name that reflects the semantic meaning of the iteration — `attempt`, `round`, `cycle`, `retry` — rather than a generic `loop`. It makes the workflow easier to read and reason about.
+</Aside>
+
+---
+
+## Using `when` inside loops
+
+The [`when` guard condition](/workflows/conditionals/) works inside loops to control which steps execute on each iteration:
+
+```yaml
+flow:
+  - loop:
+      as: round
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - reviewer
+        - coder:
+            when: reviewer.output.approved == false
+```
+
+In this example:
+- `reviewer` runs on every iteration.
+- `coder` only runs when `reviewer.output.approved` is `false` — it is skipped on the iteration where approval is granted.
+
+This pattern avoids doing unnecessary work on the final iteration of a conditional loop.
+
+---
+
+## Complete example
+
+A code review pipeline that combines `until`, `max`, `as`, and `when` to drive an agentic review cycle:
+
+```yaml
+id: code-review-loop
+name: Code Review Loop
+version: "1"
+
+defaults:
+  timeout: 10m
+
+inputs:
+  branch:
+    type: string
+    default: "main"
+  max_rounds:
+    type: integer
+    default: 5
+    description: Safety cap for review iterations.
+
+participants:
+  coder:
+    type: exec
+    run: echo '{"status":"coded","diff":"..."}'
+    onError: retry
+    retry:
+      max: 2
+      backoff: 2s
+
+  reviewer:
+    type: exec
+    run: echo '{"approved":true,"score":9,"feedback":""}'
+
+  notifyApproved:
+    type: http
+    url: https://hooks.example.com/approved
+    method: POST
+    onError: skip
+
+  notifyRejected:
+    type: http
+    url: https://hooks.example.com/rejected
+    method: POST
+    onError: skip
+
+flow:
+  - coder
+
+  - loop:
+      as: round
+      until: reviewer.output.approved == true
+      max: workflow.inputs.max_rounds
+      steps:
+        - reviewer
+        - coder:
+            when: reviewer.output.approved == false
+
+  - if:
+      condition: reviewer.output.approved == true
+      then:
+        - notifyApproved
+      else:
+        - notifyRejected
+
+output:
+  approved: reviewer.output.approved
+  score: reviewer.output.score
+  rounds: round.iteration
+```
+
+Walk-through:
+1. `coder` runs once before the loop to produce an initial draft.
+2. The loop runs up to `workflow.inputs.max_rounds` times — or exits early once `reviewer.output.approved` is `true`.
+3. On each iteration, `reviewer` always runs; `coder` only runs if the reviewer rejected the output.
+4. After the loop, the `if` block sends the appropriate notification.
+5. The workflow outputs the final approval status, score, and total number of rounds completed.

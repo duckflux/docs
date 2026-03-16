@@ -1,0 +1,51 @@
+---
+title: Tooling
+description: Editor validation, autocomplete, and the tooling roadmap for duckflux.
+---
+
+## JSON Schema
+
+A JSON Schema for the duckflux format is provided at `duckflux.schema.json`. It enables editor-level validation and autocomplete without requiring any custom tooling.
+
+**VS Code setup** — add to `.vscode/settings.json`:
+
+```json
+{
+  "yaml.schemas": {
+    "./duckflux.schema.json": "*.flow.yaml"
+  }
+}
+```
+
+This gives you red squiggles on invalid fields, autocomplete on participant types, and validation of durations, retry configs, and flow constructs — all for free via the [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml).
+
+**What the schema validates:**
+
+- Top-level structure (`id`, `name`, `participants`, `flow`, `inputs`, `output`, `defaults`)
+- Participant types and their type-specific fields
+- Reserved participant names (`workflow`, `execution`, `input`, `output`, `env`, `loop`, `event`)
+- Flow constructs (`loop`, `parallel`, `if`, `wait`, `when` guards, inline participants, participant overrides)
+- Loop requires at least `until` or `max`
+- Duration format (`30s`, `5m`, `2h`, `1d`)
+- Retry config structure
+- Input schema fields (JSON Schema subset)
+- Emit payload format
+- Wait modes (event, timeout, until)
+
+**What the schema does NOT validate** (requires a linter or runtime):
+
+- CEL expression syntax and type correctness
+- Cross-references (participant in flow exists in `participants`)
+- `onError` redirect targets exist
+- Sub-workflow file paths resolve
+- Circular dependencies
+
+---
+
+## Tooling Roadmap
+
+| Phase | Tool | Purpose |
+|-------|------|---------|
+| v1 | JSON Schema | Editor validation + autocomplete via YAML extension |
+| v1.5 | CLI linter (`duckflux lint`) | Structural validation, cross-reference checks, CEL parse |
+| v2 | Language Server (LSP) | Contextual autocomplete, go-to-definition, hover docs, real-time diagnostics |

@@ -1,0 +1,309 @@
+---
+title: Workflow files
+description: The structure of a duckflux workflow file — top-level fields, defaults, conventions, and a complete annotated example.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+A duckflux workflow is a plain YAML file. The only required field is `flow`. Everything else is optional.
+
+---
+
+## The minimal workflow
+
+```yaml
+flow:
+  - type: exec
+    run: echo "Hello, duckflux!"
+```
+
+That's a complete, runnable workflow. No metadata, no configuration, no schema. The runtime runs the step and exits.
+
+---
+
+## Top-level fields
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `version` | no | string | Spec version. Default: `"0.3"`. |
+| `id` | no | string | Unique identifier for the workflow definition. |
+| `name` | no | string | Human-readable name. |
+| `defaults` | no | object | Global defaults applied to all participants. |
+| `inputs` | no | object | Parameters the workflow accepts from its caller. |
+| `participants` | no | object | Named, reusable step definitions. |
+| `flow` | **yes** | array | The execution sequence. |
+| `output` | no | string or object | Final result mapping. Defaults to the last step's output. |
+
+---
+
+## `version`
+
+Declares which version of the duckflux spec the workflow targets. Used by the runtime for compatibility checks.
+
+```yaml
+version: "0.3"
+```
+
+If omitted, the runtime assumes the current spec version. Always quote it as a string to avoid YAML interpreting it as a number.
+
+---
+
+## `id` and `name`
+
+Optional metadata. `id` is a machine-readable identifier; `name` is for human display.
+
+```yaml
+id: code-review-pipeline
+name: Code Review Pipeline
+```
+
+Both are accessible in CEL expressions as `workflow.id` and `workflow.name`.
+
+---
+
+## `defaults`
+
+Global defaults applied to all participants that don't define their own values.
+
+```yaml
+defaults:
+  timeout: 10m
+  cwd: ./repo
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `timeout` | duration | Default maximum execution time per step. |
+| `cwd` | string | Default working directory for `exec` participants. |
+
+**Timeout precedence:**
+```
+flow-level > participant-level > defaults > runtime default (no timeout)
+```
+
+**Working directory precedence:**
+```
+participant.cwd > defaults.cwd > CLI --cwd > process cwd
+```
+
+<Aside type="tip">
+  Set `defaults.timeout` to a conservative value for all workflows that talk to external services or run long commands. It prevents a stuck step from blocking the entire execution indefinitely.
+</Aside>
+
+---
+
+## `inputs`
+
+Declares the parameters the workflow accepts from its caller. Fields without schema are treated as strings.
+
+```yaml
+inputs:
+  repoUrl:
+  branch:
+    type: string
+    default: "main"
+  maxRetries:
+    type: integer
+    default: 3
+    minimum: 1
+    maximum: 10
+```
+
+Accessible in CEL as `workflow.inputs.<field>`. See [Inputs & Outputs](/workflows/inputs-outputs/) for the full schema reference and how to pass values at runtime.
+
+---
+
+## `participants`
+
+Named, reusable step definitions. Referenced by name in the `flow`.
+
+```yaml
+participants:
+  build:
+    type: exec
+    run: npm run build
+    timeout: 5m
+
+  notify:
+    type: http
+    url: https://hooks.example.com/done
+    method: POST
+    onError: skip
+```
+
+Participants can also be defined inline in the `flow` — see [Participants](/workflows/participants/) for all three definition modes.
+
+---
+
+## `flow`
+
+The execution sequence. The only required top-level field.
+
+```yaml
+flow:
+  - build
+  - parallel:
+      - test
+      - lint
+  - if:
+      condition: test.status == "success"
+      then:
+        - deploy
+      else:
+        - notify
+```
+
+Each element is one of:
+- A **participant reference** (string)
+- An **inline participant** (object with `type`)
+- A **control flow construct** (`loop`, `parallel`, `if`, `wait`)
+- A **participant reference with overrides** (object with participant name as key)
+
+See the individual pages for [Loops](/workflows/loops/), [Parallel](/workflows/parallel/), and [Conditionals](/workflows/conditionals/).
+
+---
+
+## `output`
+
+Defines what the workflow returns to its caller. If omitted, the output of the last executed step is returned.
+
+```yaml
+# Single value
+output: reviewer.output.summary
+
+# Structured mapping
+output:
+  approved: reviewer.output.approved
+  score: reviewer.output.score
+  testResult: tests.status
+```
+
+See [Inputs & Outputs](/workflows/inputs-outputs/) for the full mapping and schema validation reference.
+
+---
+
+## File naming
+
+duckflux doesn't enforce a file naming convention, but the following pattern is widely used:
+
+```
+<name>.flow.yaml
+```
+
+Examples: `deploy.flow.yaml`, `review-loop.flow.yaml`, `ci.flow.yaml`.
+
+The `.flow.yaml` double extension makes workflows easy to distinguish from regular config files and glob with a single pattern (`**/*.flow.yaml`).
+
+<Aside>
+  When using `type: workflow` to reference a sub-workflow, paths are resolved **relative to the parent workflow's directory** — not the working directory of the process. Keep sub-workflows in the same directory or a subdirectory of their parent.
+</Aside>
+
+---
+
+## Complete annotated example
+
+```yaml
+# Spec version (optional, defaults to current)
+version: "0.3"
+
+# Machine-readable identifier
+id: deploy-pipeline
+
+# Human-readable name
+name: Deployment Pipeline
+
+# Global defaults for all participants
+defaults:
+  timeout: 10m
+  cwd: ./repo
+
+# Workflow input parameters
+inputs:
+  branch:
+    type: string
+    default: "main"
+  env:
+    type: string
+    required: true
+  maxRetries:
+    type: integer
+    default: 3
+    minimum: 1
+    maximum: 5
+
+# Named, reusable participants
+participants:
+  build:
+    type: exec
+    run: ./build.sh
+    timeout: 15m
+    onError: retry
+    retry:
+      max: 2
+      backoff: 5s
+    input:
+      branch: workflow.inputs.branch
+    output:
+      artifact:
+        type: string
+        required: true
+      version:
+        type: string
+
+  test:
+    type: exec
+    run: npm test
+    timeout: 5m
+    onError: fail
+
+  lint:
+    type: exec
+    run: npm run lint
+    timeout: 2m
+    onError: skip
+
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    timeout: 10m
+    input:
+      artifact: build.output.artifact
+      env: workflow.inputs.env
+
+  notifySuccess:
+    type: http
+    url: https://hooks.example.com/success
+    method: POST
+    onError: skip
+
+  notifyFailure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+
+# Execution sequence
+flow:
+  - build
+
+  - parallel:
+      - test
+      - lint
+
+  - deploy:
+      when: test.status == "success"
+
+  - if:
+      condition: deploy.status == "success"
+      then:
+        - notifySuccess
+      else:
+        - notifyFailure
+
+# Final result returned to the caller
+output:
+  artifact: build.output.artifact
+  version: build.output.version
+  deployed: deploy.status
+  env: workflow.inputs.env
+```

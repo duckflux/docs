@@ -1,0 +1,125 @@
+---
+title: Your first workflow
+description: Write your first duckflux workflow in minutes — a practical intro for developers.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+Duckflux is a declarative, YAML-based DSL for orchestrating workflows. You describe **what** should happen and in what order — the runtime handles execution. No SDK required, no boilerplate, no vendor lock-in.
+
+A workflow is just a YAML file. The only required field is `flow`.
+
+---
+
+## The simplest possible workflow
+
+```yaml
+flow:
+  - type: exec
+    run: echo "Hello, duckflux!"
+```
+
+That's it. One step, one command. Save it as `hello.flow.yaml` and it's ready to run.
+
+---
+
+## A practical example
+
+Here's a workflow that fetches some data, processes it, and sends the result to an HTTP endpoint:
+
+```yaml
+id: data-pipeline
+name: Data Pipeline
+
+participants:
+  fetch:
+    type: exec
+    run: curl -s https://api.example.com/data
+
+  process:
+    type: exec
+    run: ./process.sh
+    input: fetch.output
+
+  notify:
+    type: http
+    url: https://hooks.example.com/result
+    method: POST
+    body: process.output
+    onError: skip
+
+flow:
+  - fetch
+  - process
+  - notify
+```
+
+### What's happening here
+
+**`participants`** — named, reusable step definitions. Each participant has a `type` that determines how it runs:
+
+| Type | What it does |
+|------|-------------|
+| `exec` | Runs a shell command |
+| `http` | Makes an HTTP request |
+| `mcp` | Calls an MCP server tool |
+| `workflow` | Runs another workflow file |
+| `emit` | Publishes an event |
+
+**`flow`** — the execution sequence, top to bottom. Each step completes before the next begins.
+
+**`input`** — explicit input mapping. `fetch.output` is a CEL expression that reads the output of the `fetch` step. By default, outputs also chain implicitly to the next step — like Unix pipes.
+
+**`onError: skip`** — if `notify` fails, the workflow continues instead of stopping. The default is `fail`.
+
+---
+
+## Adding inputs
+
+Workflows can accept parameters:
+
+```yaml
+id: deploy
+name: Deploy
+
+inputs:
+  env:
+    type: string
+    required: true
+  branch:
+    type: string
+    default: "main"
+
+participants:
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    input:
+      env: workflow.inputs.env
+      branch: workflow.inputs.branch
+
+flow:
+  - deploy
+```
+
+Inputs are accessed in CEL expressions as `workflow.inputs.<field>`.
+
+---
+
+## File naming
+
+Duckflux doesn't enforce a naming convention, but `<name>.flow.yaml` is the common pattern:
+
+```
+deploy.flow.yaml
+review-loop.flow.yaml
+ci.flow.yaml
+```
+
+The `.flow.yaml` double extension makes workflows easy to find with a single glob (`**/*.flow.yaml`).
+
+---
+
+<Aside type="tip">
+  Workflows support much more — parallel execution, loops, conditionals, error handling, retry, timeouts, and nested sub-workflows. See [Workflow files](/workflows/) for the full reference.
+</Aside>
