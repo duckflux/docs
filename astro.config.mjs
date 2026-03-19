@@ -52,6 +52,7 @@ export default defineConfig({
 						{ label: 'Loops', slug: 'workflows/loops' },
 						{ label: 'Conditionals', slug: 'workflows/conditionals' },
 						{ label: 'Parallel execution', slug: 'workflows/parallel' },
+						{ label: 'Events', slug: 'workflows/events' },
 						{ label: 'Error handling', slug: 'workflows/error-handling' },
 						{ label: 'Nested workflows', slug: 'workflows/nested-workflows' },
 					],

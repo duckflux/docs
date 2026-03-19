@@ -1,0 +1,387 @@
+---
+title: Events
+description: Emit events and wait for them — event-driven communication within and across duckflux workflows.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+duckflux supports event-driven communication through two complementary primitives: **`emit`** (publish) and **`wait`** (subscribe). Together they allow steps to communicate asynchronously — within the same workflow, across parallel branches, or between parent and sub-workflows.
+
+---
+
+## Emitting events
+
+The `emit` participant type publishes a named event to the workflow's event hub.
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `event` | string | Yes | Event name to publish. Dot-notation is supported (e.g. `order.created`). |
+| `payload` | string or object | No | Event payload. A single CEL expression or a map of CEL expression values. |
+| `ack` | boolean | No | If `true`, blocks until delivery is confirmed. Default: `false`. |
+| `onTimeout` | string | No | Behavior when the ack deadline expires: `fail` (default) or `skip`. Only applies when `ack: true`. |
+
+### Fire-and-forget (default)
+
+The simplest mode. The event is dispatched and execution continues immediately:
+
+```yaml
+participants:
+  notifyBuild:
+    type: emit
+    event: "build.completed"
+    payload:
+      branch: workflow.inputs.branch
+      status: build.output.status
+```
+
+### Acknowledged delivery
+
+With `ack: true`, the step blocks until the event hub confirms the message was persisted. Combine with `timeout` to limit how long to wait:
+
+```yaml
+participants:
+  notifyCritical:
+    type: emit
+    event: "deploy.started"
+    payload: deploy.output
+    ack: true
+    timeout: 10s
+    onTimeout: skip
+```
+
+When the ack times out:
+- `onTimeout: fail` (default) — the step fails and follows the configured `onError` strategy.
+- `onTimeout: skip` — the step succeeds with `ack: false` in its output.
+
+### Payload formats
+
+A single CEL expression passes the value directly:
+
+```yaml
+payload: coder.output
+```
+
+A structured object maps individual fields:
+
+```yaml
+payload:
+  taskId: workflow.inputs.taskId
+  status: coder.output.status
+  startedAt: execution.startedAt
+```
+
+### Emit output
+
+The `emit` participant produces a result map with three fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | The event name that was published. |
+| `payload` | any | The resolved payload that was sent. |
+| `ack` | boolean | `true` if acknowledged delivery succeeded, `false` if it timed out with `onTimeout: skip`. |
+
+```yaml
+flow:
+  - notifyCritical
+  - if:
+      condition: notifyCritical.output.ack == false
+      then:
+        - fallbackNotify
+```
+
+---
+
+## Waiting for events
+
+The `wait` construct pauses execution until an event arrives on the hub. It is defined directly in the `flow` — not as a participant.
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `event` | string | Yes | Event name to listen for. |
+| `match` | CEL expression | No | Filter expression evaluated against the event payload. Only matching events unblock the wait. |
+| `timeout` | duration | No | Maximum time to wait before invoking `onTimeout`. |
+| `onTimeout` | string | No | Behavior on timeout: `fail` (default), `skip`, or a participant name to redirect to. |
+
+```yaml
+flow:
+  - wait:
+      event: "order.created"
+      match: event.orderId == workflow.inputs.expectedOrderId
+      timeout: 30s
+      onTimeout: fail
+```
+
+### The `event` variable
+
+Inside a `wait` block, the received event payload is accessible as the `event` variable. After the wait completes, `event` remains available in subsequent CEL expressions and becomes the chain value for the next step.
+
+```yaml
+flow:
+  - wait:
+      event: "approval.response"
+      match: event.requestId == submitRequest.output.id
+      timeout: 24h
+
+  # event payload is now the chain input for the next step
+  - as: handleApproval
+    type: exec
+    run: ./process-approval.sh
+```
+
+<Aside type="tip">
+  The `event` variable is only available inside `wait` blocks and in the immediate chain output. For long-lived access, capture the value in an explicit `input` mapping on the next step.
+</Aside>
+
+---
+
+## Wait modes
+
+The `wait` construct supports three distinct modes depending on which fields are present.
+
+### Wait for event
+
+Subscribes to the event hub and blocks until a matching event arrives:
+
+```yaml
+- wait:
+    event: "payment.processed"
+    match: event.transactionId == order.output.txId
+    timeout: 5m
+    onTimeout: fail
+```
+
+### Wait for duration (sleep)
+
+When only `timeout` is present, the step acts as a simple sleep:
+
+```yaml
+- wait:
+    timeout: 30s
+```
+
+### Wait for condition (polling)
+
+Periodically evaluates a CEL expression until it returns `true`:
+
+```yaml
+- wait:
+    until: now >= timestamp("2026-06-01T09:00:00Z")
+    poll: 1m
+    timeout: 48h
+    onTimeout: fail
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `until` | CEL expression | Condition to evaluate. Wait ends when this returns `true`. |
+| `poll` | duration | Interval between evaluations. |
+| `timeout` | duration | Maximum total wait time. |
+
+<Aside>
+  In polling mode, the `until` expression is evaluated once immediately, then re-evaluated at each `poll` interval. The `now` variable is refreshed on every evaluation.
+</Aside>
+
+---
+
+## Emit + wait pattern
+
+The most common event pattern: one step emits an event and a later step (or a parallel branch) waits for it.
+
+```yaml
+participants:
+  placeOrder:
+    type: emit
+    event: "order.created"
+    payload:
+      orderId: "ORD-001"
+      total: 99.95
+
+flow:
+  - placeOrder
+
+  - wait:
+      event: "order.created"
+      match: event.orderId == "ORD-001"
+      timeout: 5s
+      onTimeout: fail
+
+  - as: confirm
+    type: exec
+    run: echo "Order received"
+```
+
+<Aside>
+  Events emitted via `emit` are propagated **internally** within the same workflow. A `wait` step can react to events published by earlier steps in the same execution — no external infrastructure is needed for in-process communication.
+</Aside>
+
+### Acknowledged emit pattern
+
+When delivery confirmation matters, use `ack: true` on the emit side:
+
+```yaml
+participants:
+  publisher:
+    type: emit
+    event: "payment.processed"
+    ack: true
+    timeout: 5s
+    onTimeout: fail
+    payload:
+      transactionId: "TXN-42"
+      status: "approved"
+
+flow:
+  # Start a wait before emitting — the hub replays past events
+  - wait:
+      event: "payment.processed"
+      timeout: 5s
+      onTimeout: skip
+
+  - publisher
+
+output: publisher.output.ack
+```
+
+---
+
+## Events across workflows
+
+Events are shared between parent and sub-workflows. The event hub instance is passed down to all `type: workflow` participants, so events emitted in a parent are visible to sub-workflows and vice versa.
+
+```yaml
+# parent.flow.yaml
+participants:
+  trigger:
+    type: emit
+    event: "job.started"
+    payload:
+      jobId: "42"
+
+  child:
+    type: workflow
+    path: ./child.flow.yaml
+
+flow:
+  - trigger     # publishes job.started
+  - child       # child can wait for job.started
+```
+
+```yaml
+# child.flow.yaml
+flow:
+  - wait:
+      event: "job.started"
+      match: event.jobId == "42"
+      timeout: 10s
+
+  - as: process
+    type: exec
+    run: echo "Processing job"
+```
+
+<Aside type="caution">
+  To **isolate** a sub-workflow's events from the parent, run it as a separate `duckflux run` process instead of a `type: workflow` participant.
+</Aside>
+
+---
+
+## Events in parallel branches
+
+Events work across parallel branches within the same workflow. One branch can emit an event that another branch is waiting for:
+
+```yaml
+flow:
+  - parallel:
+      - as: producer
+        type: emit
+        event: "data.ready"
+        payload:
+          source: "branch-a"
+
+      - type: exec
+        run: echo "independent work"
+
+  - wait:
+      event: "data.ready"
+      timeout: 5s
+```
+
+---
+
+## Timeout behavior
+
+The `onTimeout` field on a `wait` step controls what happens when the deadline expires:
+
+| Value | Behavior |
+|-------|----------|
+| `fail` | The step fails. The workflow's `onError` strategy applies. This is the default. |
+| `skip` | The step is marked as `skipped` and execution continues. |
+| `<participant>` | Execution is redirected to the named participant as a fallback. |
+
+```yaml
+- wait:
+    event: "approval.response"
+    timeout: 24h
+    onTimeout: sendReminder
+```
+
+---
+
+## Complete example
+
+A workflow that publishes an order event, waits for payment confirmation, and then proceeds with fulfillment:
+
+```yaml
+id: order-pipeline
+name: Order Pipeline
+version: "1"
+
+inputs:
+  orderId:
+    type: string
+    required: true
+  total:
+    type: number
+    required: true
+
+participants:
+  publishOrder:
+    type: emit
+    event: "order.created"
+    payload:
+      orderId: workflow.inputs.orderId
+      total: workflow.inputs.total
+
+  fulfill:
+    type: exec
+    run: ./fulfill.sh
+    input:
+      orderId: workflow.inputs.orderId
+      paymentId: event.paymentId
+
+  notifyTimeout:
+    type: http
+    url: https://hooks.example.com/timeout
+    method: POST
+    onError: skip
+
+flow:
+  - publishOrder
+
+  - wait:
+      event: "payment.confirmed"
+      match: event.orderId == workflow.inputs.orderId
+      timeout: 30m
+      onTimeout: notifyTimeout
+
+  - fulfill
+
+output:
+  orderId: workflow.inputs.orderId
+  paymentId: event.paymentId
+  fulfillStatus: fulfill.status
+```

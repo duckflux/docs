@@ -147,6 +147,7 @@ In the parent workflow, `reviewCycle.output.approved`, `reviewCycle.output.score
 Sub-workflows behave like any other step from the parent's perspective, but run with their own isolated context:
 
 - **Isolated `execution.context`** — the sub-workflow gets its own scratchpad, separate from the parent. Data does not leak between them.
+- **Shared event hub** — the parent's [event hub](/workflows/events/) is passed down to all sub-workflows. Events emitted by the parent are visible to sub-workflows and vice versa. To isolate events, run the sub-workflow as a separate `duckflux run` process instead.
 - **`onError` and `timeout` apply to the whole sub-workflow** — if the sub-workflow exceeds its timeout or fails, the parent's `onError` strategy for that step applies.
 - **Nesting is supported** — a sub-workflow can itself call other sub-workflows. There is no hard depth limit, but deep nesting adds complexity.
 - **Path resolution** — paths in `path` are resolved relative to the parent workflow file's directory, not the working directory at runtime.
