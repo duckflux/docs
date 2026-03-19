@@ -1,6 +1,232 @@
 ---
-title: Event hubs/channels
-description: Eventos, hubs e canais do Runner.
+title: Event hubs
+description: Configure and use event hub backends in the duckflux Runner CLI — memory, NATS JetStream, and Redis Streams.
 ---
 
-Descrição dos mecanismos de evento e integração.
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The event hub is the pub/sub layer that connects [`emit`](/workflows/events/) participants to [`wait`](/workflows/events/#waiting-for-events) steps. The Runner CLI supports three interchangeable backends — you choose one via the `--event-backend` flag. All backends expose the same semantics; they differ in infrastructure requirements and delivery guarantees.
+
+---
+
+## Backends at a glance
+
+| Backend | Flag value | Infrastructure | Replay (subscribe after publish) | Fan-out |
+|---------|-----------|---------------|----------------------------------|---------|
+| In-memory | `memory` (default) | None | Yes | Yes |
+| NATS JetStream | `nats` | NATS server | No (ephemeral consumers start at latest offset) | Yes |
+| Redis Streams | `redis` | Redis server | Yes (consumer group reads from stream start) | Yes |
+
+<Aside type="tip">
+  Start with the default `memory` backend — it requires no external services and is sufficient for single-process workflows. Switch to NATS or Redis when you need cross-process event delivery or durable persistence.
+</Aside>
+
+---
+
+## CLI flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--event-backend` | string | `memory` | Backend selection: `memory`, `nats`, or `redis`. |
+| `--nats-url` | string | — | NATS server URL. **Required** when `--event-backend=nats`. |
+| `--nats-stream` | string | `duckflux-events` | JetStream stream name. |
+| `--redis-addr` | string | `localhost:6379` | Redis server address. |
+| `--redis-db` | int | `0` | Redis database number. |
+
+---
+
+## In-memory backend (default)
+
+The memory backend uses an in-process Go channel (via Watermill's GoChannel). No external services are needed.
+
+```bash
+duckflux run workflow.flow.yaml
+# equivalent to:
+duckflux run workflow.flow.yaml --event-backend=memory
+```
+
+### Characteristics
+
+- **Persistent mode enabled** — subscribers created after a `Publish` still receive past events. This means a `wait` step placed after an `emit` in the flow will correctly receive the event, even though the subscription starts after the event was published.
+- **Single process only** — events are not visible to other `duckflux run` processes.
+- **No setup required** — works out of the box.
+
+<Aside>
+  The memory backend is ideal for development, testing, and workflows that run as a single process. For production use cases where events need to cross process boundaries or survive restarts, use NATS or Redis.
+</Aside>
+
+---
+
+## NATS JetStream backend
+
+Uses [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) for durable, distributed event delivery.
+
+```bash
+duckflux run workflow.flow.yaml \
+  --event-backend=nats \
+  --nats-url=nats://localhost:4222
+```
+
+### Pre-creating streams
+
+NATS JetStream stream names cannot contain dots, but duckflux event names use dot-notation (e.g. `payment.processed`). The runner handles this transparently by looking up streams by subject rather than by name.
+
+You **must** create streams before running. Replace dots with underscores in the stream name and use the original dot-notation event name as the subject:
+
+```bash
+nats stream add payment_processed \
+  --subjects "payment.processed" \
+  --storage file \
+  --replicas 1 \
+  --server nats://localhost:4222
+```
+
+Then reference the event normally in your workflow:
+
+```yaml
+participants:
+  notify:
+    type: emit
+    event: "payment.processed"
+    payload:
+      transactionId: "TXN-42"
+```
+
+<Aside type="caution">
+  If no stream is found for the event subject, the runner returns an error at subscribe time: `no stream found for subject "..."`. Make sure all event names used in `emit` and `wait` have a corresponding JetStream stream.
+</Aside>
+
+### Characteristics
+
+- **Ephemeral consumers** — each subscription creates an ephemeral JetStream consumer that is automatically cleaned up when the subscription ends.
+- **Subject-based stream lookup** — the runner uses `StreamNameBySubject` to find the correct stream, so dot-notation in event names works transparently.
+- **No replay** — ephemeral consumers start at the latest offset. If an event is published before the subscriber is ready, it will be missed. Design your flow accordingly (emit after the wait is registered, or use the memory backend for in-process replay).
+
+---
+
+## Redis Streams backend
+
+Uses [Redis Streams](https://redis.io/docs/data-types/streams/) for persistent event delivery.
+
+```bash
+duckflux run workflow.flow.yaml \
+  --event-backend=redis \
+  --redis-addr=localhost:6379
+```
+
+### Characteristics
+
+- **Consumer groups** — the runner creates a consumer group named `duckflux` (configurable) for each event stream. This enables fan-out to multiple consumers.
+- **Replay support** — consumer groups read from the start of the stream, so events published before a subscriber is ready are still delivered.
+- **Auto-created streams** — Redis creates streams automatically on first publish. No manual setup is required.
+- **Stream key = event name** — the event name string is used directly as the Redis stream key.
+
+### Custom Redis database
+
+Use `--redis-db` to target a specific Redis database:
+
+```bash
+duckflux run workflow.flow.yaml \
+  --event-backend=redis \
+  --redis-addr=redis.internal:6379 \
+  --redis-db=2
+```
+
+---
+
+## Sub-workflow hub sharing
+
+The event hub is shared recursively with all sub-workflows. An event emitted by the parent is visible to sub-workflows and vice versa — they all use the same underlying pub/sub bus.
+
+```yaml
+# parent.flow.yaml
+participants:
+  trigger:
+    type: emit
+    event: "job.started"
+    payload:
+      jobId: "42"
+
+  child:
+    type: workflow
+    path: ./child.flow.yaml
+
+flow:
+  - trigger    # publishes job.started to the shared hub
+  - child      # child.flow.yaml can wait for job.started
+```
+
+```yaml
+# child.flow.yaml
+flow:
+  - wait:
+      event: "job.started"
+      match: event.jobId == "42"
+      timeout: 10s
+
+  - as: process
+    type: exec
+    run: echo "Processing job"
+```
+
+<Aside type="caution">
+  To isolate a sub-workflow's events from the parent, run it as a separate `duckflux run` process instead of a `type: workflow` participant. Each process gets its own event hub instance.
+</Aside>
+
+---
+
+## Choosing a backend
+
+| Scenario | Recommended backend |
+|----------|-------------------|
+| Local development and testing | `memory` |
+| Single-process workflows | `memory` |
+| Cross-process event delivery | `nats` or `redis` |
+| Durable event persistence | `redis` (auto-created streams) or `nats` (pre-created streams) |
+| Existing NATS infrastructure | `nats` |
+| Existing Redis infrastructure | `redis` |
+
+---
+
+## Examples
+
+### Fire-and-forget with memory backend
+
+```bash
+duckflux run examples/events.flow.yaml
+```
+
+### Acknowledged emit with NATS
+
+```bash
+# Create the stream first
+nats stream add deploy_started \
+  --subjects "deploy.started" \
+  --storage file \
+  --replicas 1
+
+# Run the workflow
+duckflux run deploy.flow.yaml \
+  --event-backend=nats \
+  --nats-url=nats://localhost:4222
+```
+
+### Cross-process events with Redis
+
+Terminal 1 — wait for an event:
+
+```bash
+duckflux run listener.flow.yaml \
+  --event-backend=redis \
+  --redis-addr=localhost:6379
+```
+
+Terminal 2 — emit the event:
+
+```bash
+duckflux run emitter.flow.yaml \
+  --event-backend=redis \
+  --redis-addr=localhost:6379
+```
+
+Both processes share the same Redis Streams backend, so events emitted in one are visible to the other.

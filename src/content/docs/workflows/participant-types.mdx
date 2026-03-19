@@ -219,6 +219,7 @@ Publishes an event to the workflow's event hub. Use this to broadcast state chan
 | `event` | string | **Required.** Event name to emit. |
 | `payload` | string or object | Event payload. A single CEL expression or a map of CEL expression values. |
 | `ack` | boolean | If `true`, blocks until the event hub confirms delivery. Default: `false`. |
+| `onTimeout` | string | Behavior when the ack deadline expires: `fail` (default) or `skip`. Only applies when `ack: true`. |
 
 ### Fire-and-forget vs acknowledged
 
@@ -240,7 +241,7 @@ With `ack: true`, the step blocks until delivery is confirmed. Combine with `tim
   payload: deploy.output
   ack: true
   timeout: 10s
-  onError: skip
+  onTimeout: skip
 ```
 
 ### Payload formats
@@ -261,7 +262,7 @@ payload:
 ```
 
 <Aside>
-  Events emitted via `emit` are also propagated **internally** within the same workflow. A `wait` step can react to events published by earlier steps in the same execution. See [Variables and Expressions](/workflows/variables-and-expressions/) for the `event` variable available inside `wait` blocks.
+  Events emitted via `emit` are also propagated **internally** within the same workflow. A `wait` step can react to events published by earlier steps in the same execution. See [Events](/workflows/events/) for the full guide on emit, wait, and event-driven patterns.
 </Aside>
 
 ---
