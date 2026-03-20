@@ -22,6 +22,7 @@ Expressions appear in any field that needs to reference runtime data:
 | `http` url, headers, body | `url: '"https://api.example.com/users/" + workflow.inputs.userId'` |
 | `emit` payload | `payload: coder.output` |
 | `wait` match condition | `match: event.requestId == submitRequest.output.id` |
+| `set` values | `token: workflow.inputs.api_token` |
 | `cwd` path | `cwd: workflow.inputs.packagePath` |
 
 <Aside type="tip">
@@ -65,7 +66,7 @@ flow:
 | `execution.context` | map | Read/write shared data scratchpad. |
 | `execution.cwd` | string | Resolved base working directory. |
 
-`execution.context` is the only writable shared state in a workflow — useful for passing data across iterations in a loop or between branches:
+`execution.context` is the only writable shared state in a workflow. Use the [`set` construct](/workflows/set/) to assign values, or read them in any CEL expression:
 
 ```yaml
 flow:

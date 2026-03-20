@@ -123,7 +123,7 @@ flow:
 Here, `reviewer` is skipped on the first iteration (`loop.index == 0`) and runs on all subsequent ones.
 
 <Aside>
-  Step outputs inside a loop are **overwritten on each iteration** — they always reflect the most recent execution. If you need to preserve results across iterations, use `execution.context` as a scratchpad (see [Variables and Expressions](/workflows/variables-and-expressions/)).
+  Step outputs inside a loop are **overwritten on each iteration** — they always reflect the most recent execution. If you need to preserve results across iterations, use [`set`](/workflows/set/) to write values to `execution.context` as a scratchpad (see [Variables and Expressions](/workflows/variables-and-expressions/)).
 </Aside>
 
 ---

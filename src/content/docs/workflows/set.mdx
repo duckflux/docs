@@ -1,0 +1,228 @@
+---
+title: Context assignment (set)
+description: Write values to the shared execution context using the set construct — assign intermediate results, environment-derived values, or computed data for use in later steps.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The `set` construct writes values into `execution.context`, a shared scratchpad that persists across the entire workflow run. Use it to assign intermediate values, derive configuration, or pass computed data between steps without piping through participants.
+
+---
+
+## The `set` construct
+
+A `set` block maps one or more keys to [CEL expressions](/workflows/variables-and-expressions/). Each evaluated result is stored as `execution.context.<key>`:
+
+```yaml
+flow:
+  - set:
+      token: workflow.inputs.api_token
+      region: "'us-east-1'"
+
+  - as: fetch
+    type: http
+    url: "'https://api.example.com/data'"
+    headers:
+      Authorization: "'Bearer ' + execution.context.token"
+      X-Region: execution.context.region
+```
+
+<Aside type="tip">
+  `set` is a **flow-level control operation**, like `if` or `wait`. It is not a participant — it has no `type`, produces no output, and does not affect the [implicit I/O chain](/workflows/inputs-outputs/#implicit-io-chain). The chain passes through it unchanged.
+</Aside>
+
+### Fields
+
+Each key inside the `set` block is a context variable name. The value is a CEL expression.
+
+```yaml
+- set:
+    <key>: <CEL expression>
+    <key>: <CEL expression>
+```
+
+| Aspect | Details |
+|--------|---------|
+| **Keys** | Any valid identifier, except [reserved names](/workflows/variables-and-expressions/#reserved-names) (`workflow`, `execution`, `input`, `output`, `env`, `loop`, `event`). |
+| **Values** | CEL expressions evaluated at runtime against the current state. |
+| **Multiple keys** | Yes — assign as many as needed in a single `set` block. |
+| **Overwrite** | If a key already exists in `execution.context`, it is overwritten. |
+
+---
+
+## Basic usage
+
+Assign a literal string and a computed value:
+
+```yaml
+flow:
+  - set:
+      env_name: "'production'"
+      start_ts: "now"
+
+  - as: deploy
+    type: exec
+    run: ./deploy.sh
+    input:
+      environment: execution.context.env_name
+```
+
+---
+
+## Using workflow inputs
+
+Store values derived from workflow inputs for later reuse:
+
+```yaml
+inputs:
+  notion_token:
+    type: string
+  repo_url:
+    type: string
+    format: uri
+
+flow:
+  - set:
+      token: workflow.inputs.notion_token
+      repo: workflow.inputs.repo_url
+
+  - as: fetch_pages
+    type: http
+    url: "'https://api.notion.com/v1/pages'"
+    headers:
+      Authorization: "'Bearer ' + execution.context.token"
+```
+
+---
+
+## Conditional assignment
+
+Combine `set` with `if` to assign values based on conditions:
+
+```yaml
+flow:
+  - if:
+      condition: has(workflow.inputs.custom_token)
+      then:
+        - set:
+            api_token: workflow.inputs.custom_token
+      else:
+        - set:
+            api_token: env.DEFAULT_API_TOKEN
+
+  - as: call_api
+    type: http
+    url: "'https://api.example.com/action'"
+    headers:
+      Authorization: "'Bearer ' + execution.context.api_token"
+```
+
+---
+
+## Accumulating state across loop iterations
+
+`set` is useful for building up state across loop iterations — for example, tracking a score that determines when to exit:
+
+```yaml
+flow:
+  - set:
+      best_score: "0"
+
+  - loop:
+      until: execution.context.best_score >= 8
+      max: 5
+      steps:
+        - reviewer
+        - set:
+            best_score: reviewer.output.score
+
+  - as: report
+    type: exec
+    run: echo "Final score"
+    input: execution.context.best_score
+```
+
+<Aside type="caution">
+  Step outputs inside a loop are **overwritten on each iteration**. If you need to preserve a value across iterations, use `set` to write it to `execution.context`.
+</Aside>
+
+---
+
+## Chain passthrough
+
+`set` is transparent to the [implicit I/O chain](/workflows/inputs-outputs/#implicit-io-chain). The output of the step before `set` is passed unchanged to the step after it:
+
+```yaml
+flow:
+  - as: fetch
+    type: exec
+    run: curl -s https://api.example.com/data
+
+  - set:
+      fetched_at: "now"
+
+  - as: process
+    type: exec
+    run: ./process.sh    # receives fetch's output via chain, not set's
+```
+
+---
+
+## Complete example
+
+```yaml
+id: context-pipeline
+name: Context Assignment Pipeline
+version: "1"
+
+inputs:
+  api_token:
+    type: string
+    required: true
+  environment:
+    type: string
+    default: "staging"
+
+flow:
+  # Initialize context from inputs and environment
+  - set:
+      token: workflow.inputs.api_token
+      env: workflow.inputs.environment
+      run_id: execution.id
+
+  # Conditional endpoint selection
+  - if:
+      condition: execution.context.env == "production"
+      then:
+        - set:
+            base_url: "'https://api.example.com'"
+      else:
+        - set:
+            base_url: "'https://staging-api.example.com'"
+
+  # Use context values in subsequent steps
+  - as: health_check
+    type: http
+    url: execution.context.base_url + "'/health'"
+    method: GET
+    headers:
+      Authorization: "'Bearer ' + execution.context.token"
+    timeout: 10s
+
+  # Store result for later use
+  - set:
+      api_healthy: health_check.status == "success"
+
+  - if:
+      condition: execution.context.api_healthy
+      then:
+        - as: deploy
+          type: exec
+          run: ./deploy.sh
+          timeout: 5m
+
+output:
+  environment: execution.context.env
+  api_healthy: execution.context.api_healthy
+  run_id: execution.context.run_id
+```
