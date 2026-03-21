@@ -163,23 +163,51 @@ flow:
 
 ### Flow-level override
 
-When invoking a reusable participant in the flow, you can override its `input` mapping for that specific call:
+When invoking a reusable participant in the flow, you can override its `input` mapping for that specific call. Since v0.5, the flow override **merges** with the participant's declared `input` instead of replacing it:
 
 ```yaml
 participants:
-  coder:
+  fetch_page:
     type: exec
-    run: ./generate.sh
-    input: workflow.inputs.taskDescription
+    input:
+      NOTION_TOKEN: execution.context.token   # base input — always present
+    run: |
+      curl -sS "https://api.notion.com/v1/pages/$(cat)" \
+        -H "Authorization: Bearer ${NOTION_TOKEN}"
 
 flow:
-  - coder:
-      input: reviewer.output.feedback   # override for this invocation
-  - reviewer
+  # resolved input = { NOTION_TOKEN: execution.context.token, PAGE_ID: workflow.inputs.story_id }
+  - fetch_page:
+      input:
+        PAGE_ID: workflow.inputs.story_id
+
+  - fetch_page:
+      input:
+        PAGE_ID: open_task.output
+```
+
+No need to repeat `NOTION_TOKEN` on every call — it comes from the participant's base `input` and is automatically merged with the flow-level override.
+
+Merge rules match the implicit I/O chain rules:
+
+| Base type | Override type | Result |
+|---|---|---|
+| map | map | Merged — override keys take precedence |
+| string | string | Override takes precedence |
+| Incompatible types | — | Runtime error |
+
+When all three sources are present (chain + participant base + flow override), the merge order is:
+
+```
+chain < participant base input < flow override input
 ```
 
 <Aside type="tip">
-  Use participant-level `input` as the default mapping, and flow-level overrides when a specific context requires different data — for example, feeding reviewer feedback back into the coder on a second pass.
+  Use participant-level `input` for shared configuration (auth tokens, base URLs), and flow-level overrides for invocation-specific data (page IDs, query parameters). The merge ensures you never have to repeat the shared parts.
+</Aside>
+
+<Aside type="caution">
+  This merge behavior applies only to `input`. All other flow-level overrides (`timeout`, `onError`, `retry`, `when`) still **replace** the participant-level value entirely.
 </Aside>
 
 ---
@@ -369,6 +397,16 @@ duckflux has four distinct I/O boundaries:
 ---
 
 ## Precedence summary
+
+**Input resolution** (when multiple sources are present):
+
+```
+chain < participant base input < flow override input
+```
+
+Flow override has highest precedence on key conflicts, then participant base, then chain. Map sources are merged; string sources use the highest-precedence value.
+
+**Schema validation:**
 
 ```
 Nothing defined          → string in, string out — no validation

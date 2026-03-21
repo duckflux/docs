@@ -3,6 +3,40 @@ title: Changelog
 description: History of spec versions and breaking changes.
 ---
 
+## v0.5 (Draft)
+
+#### New Features
+
+**Participant input merge on flow override**
+
+When a flow override specifies `input` for a participant invocation, the runtime now **merges** it with the participant's declared `input` instead of replacing it. This eliminates the need to repeat shared base inputs (like auth tokens) on every flow-level override call.
+
+Merge rules follow the existing chain merge semantics: map + map merges keys (flow override wins on conflict), string + string uses the flow override, incompatible types produce a runtime error.
+
+When all three sources are present (chain + participant base + flow override), the merge order is: `chain < participant base input < flow override input`.
+
+This change affects only `input`. All other flow-level overrides (`timeout`, `onError`, `retry`, `when`) continue to replace the participant-level value.
+
+#### Changes
+
+- Specification version bumped from `0.4` to `0.5`.
+
+---
+
+## v0.4 (Draft)
+
+#### New Features
+
+**`set` flow construct (context assignment)**
+
+The `set` construct writes values into `execution.context` via CEL expressions. It is a flow-level control operation (not a participant) — it does not produce output and is transparent to the implicit I/O chain.
+
+#### Changes
+
+- Specification version bumped from `0.3` to `0.4`.
+
+---
+
 ## v0.3 (Draft)
 
 #### Breaking Changes
