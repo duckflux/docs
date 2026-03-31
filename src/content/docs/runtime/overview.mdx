@@ -1,0 +1,144 @@
+---
+title: Runtime overview
+description: Architecture, packages, and capabilities of the DuckFlux JavaScript runtime.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+The DuckFlux JavaScript runtime is a TypeScript implementation of the [DuckFlux spec](https://github.com/duckflux/spec/blob/main/SPEC.md). It targets [Bun](https://bun.sh) and Node.js and ships as a set of focused npm packages so you can use exactly what you need — nothing more.
+
+---
+
+---
+
+## Two ways to use it
+
+### As a CLI tool
+
+Install `@duckflux/runner` and run workflows from the terminal. No code required.
+
+```bash
+duckflux run workflow.yaml --input name=World
+```
+
+See [CLI usage](/runtime/cli/) for the full command reference.
+
+### As an embedded library
+
+Install `@duckflux/core` and call `executeWorkflow` directly from your application. No CLI, no subprocess, no glue scripts.
+
+```typescript
+import { parseWorkflow, executeWorkflow } from "@duckflux/core";
+
+const workflow = parseWorkflow(yamlString);
+const result = await executeWorkflow(workflow, { name: "World" });
+```
+
+See [Library usage](/runtime/library/) for the full API reference.
+
+---
+
+## Architecture
+
+```
+@duckflux/runner          @duckflux/hub-nats
+      │                         │
+      │          @duckflux/core │
+      │    ┌────────────────────┴────────────────────┐
+      └───►│  parser  │  engine  │  CEL  │  eventhub │
+           └──────────────────────────────────┬──────┘
+                                              │
+                                    @duckflux/hub-redis
+```
+
+### `@duckflux/core` internals
+
+| Sub-module | Import path | Responsibility |
+|-----------|------------|---------------|
+| `parser` | `@duckflux/core/parser` | YAML → `Workflow` object, schema and semantic validation |
+| `engine` | `@duckflux/core/engine` | Step execution, I/O chaining, error strategies, retry, loop, parallel, if |
+| `cel` | `@duckflux/core/cel` | CEL expression evaluation and context building |
+| `eventhub` | `@duckflux/core/eventhub` | `EventHub` interface, `MemoryHub` implementation, hub factory |
+
+All sub-modules are also re-exported from the root `@duckflux/core` entry point, so granular imports are optional.
+
+---
+
+## Spec feature coverage
+
+The JavaScript runtime implements the full [DuckFlux v0.6 spec](https://github.com/duckflux/spec/blob/main/SPEC.md):
+
+**Participant types**
+- `exec` — shell commands; map input → env vars, string input → stdin
+- `http` — HTTP requests with CEL-interpolated URL, headers, and body
+- `emit` — event publishing with optional acknowledgment timeout
+- `workflow` — sub-workflow calls with circular detection
+- `mcp` — stub (not yet implemented)
+
+**Flow constructs**
+- `set` — writes values to `execution.context`; transparent to the I/O chain
+- `wait` — sleep, poll a CEL condition, or block on an event from the hub
+- `loop` — bounded (`max`) and condition-driven (`until`) iteration
+- `parallel` — concurrent branch execution; failure cancels siblings
+- `if` / `else` — conditional branching with CEL guard
+- `when` — per-step skip guard (CEL boolean)
+
+**I/O and expressions**
+- Implicit I/O chain — step output flows as input to the next step automatically
+- `workflow.inputs.*` namespace — inputs accessed via CEL as `workflow.inputs.<field>`
+- Input merge scope — `chain < participant base input < flow override input`
+- CEL standard library — `has`, `size`, `matches`, `timestamp`, `duration`, collection operators, and more
+
+**Error handling**
+- Strategies per step: `fail` (default), `skip`, `retry` (exponential backoff)
+- Timeout resolution: flow override → participant → `defaults` → none
+
+**Event hub**
+- Three backends: `memory` (built-in), `nats`, `redis`
+- Hub shared across the full execution tree including sub-workflows
+
+---
+
+## Event hub
+
+`emit` and `wait.event` steps require an event hub. The runtime ships with an in-memory hub that needs no external services:
+
+```typescript
+import { MemoryHub, executeWorkflow } from "@duckflux/core";
+
+const hub = new MemoryHub();
+await executeWorkflow(workflow, inputs, basePath, { hub });
+await hub.close();
+```
+
+For cross-process or persistent event delivery, install one of the optional backends:
+
+| Backend | Extra package | Replay | Cross-process |
+|---------|--------------|--------|--------------|
+| In-memory | none | Yes | No |
+| NATS JetStream | `@duckflux/hub-nats` | No | Yes |
+| Redis Streams | `@duckflux/hub-redis` | Yes | Yes |
+
+See [Event hub providers](/runtime/event-hub-providers/) for configuration details.
+
+---
+
+## Where to go next
+
+<CardGrid>
+  <LinkCard
+    title="CLI usage"
+    href="/runtime/cli/"
+    description="Run, lint, and validate workflows from the terminal."
+  />
+  <LinkCard
+    title="Library usage"
+    href="/runtime/library/"
+    description="Embed the runtime in your application and use the full TypeScript API."
+  />
+  <LinkCard
+    title="Event hub providers"
+    href="/runtime/event-hub-providers/"
+    description="Configure memory, NATS, or Redis backends — or implement your own."
+  />
+</CardGrid>

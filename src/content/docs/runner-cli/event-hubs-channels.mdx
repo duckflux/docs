@@ -40,9 +40,9 @@ The event hub is the pub/sub layer that connects [`emit`](/workflows/events/) pa
 The memory backend uses an in-process Go channel (via Watermill's GoChannel). No external services are needed.
 
 ```bash
-duckflux run workflow.flow.yaml
+duckflux run workflow.flux.yaml
 # equivalent to:
-duckflux run workflow.flow.yaml --event-backend=memory
+duckflux run workflow.flux.yaml --event-backend=memory
 ```
 
 ### Characteristics
@@ -62,7 +62,7 @@ duckflux run workflow.flow.yaml --event-backend=memory
 Uses [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) for durable, distributed event delivery.
 
 ```bash
-duckflux run workflow.flow.yaml \
+duckflux run workflow.flux.yaml \
   --event-backend=nats \
   --nats-url=nats://localhost:4222
 ```
@@ -109,7 +109,7 @@ participants:
 Uses [Redis Streams](https://redis.io/docs/data-types/streams/) for persistent event delivery.
 
 ```bash
-duckflux run workflow.flow.yaml \
+duckflux run workflow.flux.yaml \
   --event-backend=redis \
   --redis-addr=localhost:6379
 ```
@@ -126,7 +126,7 @@ duckflux run workflow.flow.yaml \
 Use `--redis-db` to target a specific Redis database:
 
 ```bash
-duckflux run workflow.flow.yaml \
+duckflux run workflow.flux.yaml \
   --event-backend=redis \
   --redis-addr=redis.internal:6379 \
   --redis-db=2
@@ -139,7 +139,7 @@ duckflux run workflow.flow.yaml \
 The event hub is shared recursively with all sub-workflows. An event emitted by the parent is visible to sub-workflows and vice versa — they all use the same underlying pub/sub bus.
 
 ```yaml
-# parent.flow.yaml
+# parent.flux.yaml
 participants:
   trigger:
     type: emit
@@ -149,15 +149,15 @@ participants:
 
   child:
     type: workflow
-    path: ./child.flow.yaml
+    path: ./child.flux.yaml
 
 flow:
   - trigger    # publishes job.started to the shared hub
-  - child      # child.flow.yaml can wait for job.started
+  - child      # child.flux.yaml can wait for job.started
 ```
 
 ```yaml
-# child.flow.yaml
+# child.flux.yaml
 flow:
   - wait:
       event: "job.started"
@@ -193,7 +193,7 @@ flow:
 ### Fire-and-forget with memory backend
 
 ```bash
-duckflux run examples/events.flow.yaml
+duckflux run examples/events.flux.yaml
 ```
 
 ### Acknowledged emit with NATS
@@ -206,7 +206,7 @@ nats stream add deploy_started \
   --replicas 1
 
 # Run the workflow
-duckflux run deploy.flow.yaml \
+duckflux run deploy.flux.yaml \
   --event-backend=nats \
   --nats-url=nats://localhost:4222
 ```
@@ -216,7 +216,7 @@ duckflux run deploy.flow.yaml \
 Terminal 1 — wait for an event:
 
 ```bash
-duckflux run listener.flow.yaml \
+duckflux run listener.flux.yaml \
   --event-backend=redis \
   --redis-addr=localhost:6379
 ```
@@ -224,7 +224,7 @@ duckflux run listener.flow.yaml \
 Terminal 2 — emit the event:
 
 ```bash
-duckflux run emitter.flow.yaml \
+duckflux run emitter.flux.yaml \
   --event-backend=redis \
   --redis-addr=localhost:6379
 ```

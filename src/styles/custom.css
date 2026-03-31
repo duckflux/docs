@@ -16,11 +16,11 @@
   --sl-color-gray-3: #6b7a8d;          /* muted text / borders */
   --sl-color-gray-4: #384456;          /* subtle borders */
   --sl-color-gray-5: #131a2a;          /* sidebar / card backgrounds */
-  --sl-color-gray-6: #0d1b2a;          /* deeper bg (matches --bg-deeper) */
-  --sl-color-gray-7: #0a0a1a;          /* main page bg (matches --bg-dark) */
+  --sl-color-gray-6: #0f0e20;          /* nav / sidebar bg (rgb 15,14,32) */
+  --sl-color-gray-7: #0b0a15;          /* main page bg (rgb 11,10,21) */
 
   --sl-color-white: #f0f4f8;
-  --sl-color-black: #0a0a1a;
+  --sl-color-black: #0b0a15;
 
   /* Inverted text color for accent backgrounds (e.g. active sidebar item) */
   --sl-color-text-invert: #0a0a1a;
@@ -36,9 +36,34 @@
   --sl-font-mono: var(--__sl-font-mono);
 }
 
-/* Force headings to monospace like the main site */
+/* Force headings to Outfit */
 .sl-markdown-content :is(h1, h2, h3, h4) {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: 'Outfit', system-ui, sans-serif;
+}
+
+/* ─── Light theme ─── */
+:root[data-theme='light'] {
+  /* Accent: duckflux purple instead of gold */
+  --sl-color-accent-low: #e8e8f0;         /* light purple tint for badge/highlight bg */
+  --sl-color-accent: #2d2d5e;             /* mid purple for links */
+  --sl-color-accent-high: #101024;        /* duckflux purple (rgb 16,16,36) for strong emphasis */
+
+  /* Gray scale (inverted for light mode) */
+  --sl-color-gray-1: #1a1a2e;            /* primary text — dark with purple undertone */
+  --sl-color-gray-2: #33334d;            /* secondary text */
+  --sl-color-gray-3: #6b6b8a;            /* muted text / borders */
+  --sl-color-gray-4: #a0a0b8;            /* subtle borders */
+  --sl-color-gray-5: #d8d8e4;            /* inline code bg */
+  --sl-color-gray-6: #ececf2;            /* sidebar bg — visible contrast vs body */
+  --sl-color-gray-7: #f2f2f8;            /* nav bg / code block bg */
+
+  --sl-color-white: #101024;             /* "white" = darkest in light mode */
+  --sl-color-black: #ffffff;             /* "black" = lightest in light mode (body bg) */
+
+  --sl-color-text-invert: #ffffff;
+
+  /* Sidebar contrast: use gray-6 tint instead of same-as-body */
+  --sl-color-bg-sidebar: var(--sl-color-gray-6);
 }
 
 /* ─── Body smoothing ─── */
@@ -52,8 +77,13 @@ body {
 /* Sidebar group labels */
 .sidebar-content .top-level > li > details > summary,
 nav.sidebar .top-level > li > details > summary {
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: 'Outfit', system-ui, sans-serif;
   text-transform: uppercase;
   font-size: 0.7rem;
   letter-spacing: 0.08em;
+}
+
+/* ─── Steps spacing ─── */
+.sl-steps > li + li {
+  margin-top: 2rem;
 }

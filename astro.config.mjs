@@ -7,6 +7,13 @@ import starlightDocSearch from '@astrojs/starlight-docsearch';
 export default defineConfig({
 	integrations: [
 		starlight({
+			expressiveCode: {
+				themes: ['github-dark', 'github-light'],
+				useStarlightUiThemeColors: true,
+				styleOverrides: {
+					borderRadius: '0.5rem',
+				},
+			},
 			title: 'duckflux docs',
 			logo: {
 				src: './src/assets/duckflow.png',
@@ -36,7 +43,6 @@ export default defineConfig({
 					label: 'Getting started',
 					items: [
 						{ label: 'Your first workflow', slug: 'getting-started/your-first-workflow' },
-						{ label: 'Running the workflow', slug: 'getting-started/running-the-workflow' },
 						{ label: 'Exploring participants', slug: 'getting-started/exploring-participants' },
 						{ label: 'A real-world example', slug: 'getting-started/a-real-world-example' },
 					],
@@ -59,14 +65,14 @@ export default defineConfig({
 					],
 				},
 				{
-					label: 'Runner CLI (Go)',
+					label: 'Runtime & library',
 					collapsed: true,
-					autogenerate: { directory: 'runner-cli' },
-				},
-				{
-					label: 'JavaScript Runtime/Library',
-					collapsed: true,
-					autogenerate: { directory: 'javascript-runtime' },
+					items: [
+						{ label: "Runtime overview", slug: 'runtime/overview' },
+						{ label: 'CLI usage', slug: 'runtime/cli' },
+						{ label: 'Event hub providers', slug: 'runtime/event-hub-providers' },
+						{ label: 'Library usage', slug: 'runtime/library' }
+					],
 				},
 				{
 					label: 'Tooling',

@@ -3,14 +3,11 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
-    "dev": "PATH=\"$HOME/.volta/tools/image/node/22.21.0/bin:$PATH\" astro dev",
-    "start": "PATH=\"$HOME/.volta/tools/image/node/22.21.0/bin:$PATH\" astro dev",
-    "build": "astro build",
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "bun scripts/generate-llms.ts && astro build",
     "preview": "astro preview",
     "astro": "astro"
-  },
-  "volta": {
-    "node": "^22.12.0"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.38.1",

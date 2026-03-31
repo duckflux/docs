@@ -187,12 +187,12 @@ See [Inputs & Outputs](/workflows/inputs-outputs/) for the full mapping and sche
 duckflux doesn't enforce a file naming convention, but the following pattern is widely used:
 
 ```
-<name>.flow.yaml
+<name>.flux.yaml
 ```
 
-Examples: `deploy.flow.yaml`, `review-loop.flow.yaml`, `ci.flow.yaml`.
+Examples: `deploy.flux.yaml`, `review-loop.flux.yaml`, `ci.flux.yaml`.
 
-The `.flow.yaml` double extension makes workflows easy to distinguish from regular config files and glob with a single pattern (`**/*.flow.yaml`).
+The `.flux.yaml` double extension makes workflows easy to distinguish from regular config files and glob with a single pattern (`**/*.flux.yaml`).
 
 <Aside>
   When using `type: workflow` to reference a sub-workflow, paths are resolved **relative to the parent workflow's directory** — not the working directory of the process. Keep sub-workflows in the same directory or a subdirectory of their parent.

@@ -1,0 +1,41 @@
+# duckflux
+
+> duckflux is a declarative, YAML-based workflow DSL and runner system.
+> Describe **what** should happen and in what order — the runtime handles execution.
+> No SDK, no boilerplate, no vendor lock-in.
+
+> Full consolidated reference: [LLMs-full.txt](https://docs.duckflux.openvibes.tech/LLMs-full.txt)
+
+## Workflow DSL reference
+
+- [workflows](https://docs.duckflux.openvibes.tech/workflows/): The structure of a duckflux workflow file — top-level fields, defaults, conventions, and a complete annotated example.
+- [workflows/participants](https://docs.duckflux.openvibes.tech/workflows/participants/): The atomic unit of work in duckflux — how to define, name, and reuse participants across your workflows.
+- [workflows/participant-types](https://docs.duckflux.openvibes.tech/workflows/participant-types/): Reference for all participant types in duckflux — exec, http, mcp, workflow, and emit — including their fields and usage examples.
+- [workflows/inputs-outputs](https://docs.duckflux.openvibes.tech/workflows/inputs-outputs/): How to declare and pass data into workflows, between participants, and back to the caller.
+- [workflows/variables-and-expressions](https://docs.duckflux.openvibes.tech/workflows/variables-and-expressions/): CEL expressions and runtime variables available in duckflux workflows — conditions, input mappings, guards, and the full variable reference.
+- [workflows/set](https://docs.duckflux.openvibes.tech/workflows/set/): Write values to the shared execution context using the set construct — assign intermediate results, environment-derived values, or computed data for use in later steps.
+- [workflows/loops](https://docs.duckflux.openvibes.tech/workflows/loops/): Repeat steps conditionally or a fixed number of times using the loop construct.
+- [workflows/conditionals](https://docs.duckflux.openvibes.tech/workflows/conditionals/): Conditional flow control in workflows with if/then/else and guard conditions with when.
+- [workflows/parallel](https://docs.duckflux.openvibes.tech/workflows/parallel/): Run multiple steps concurrently with the parallel construct, and understand how outputs are aggregated after all branches complete.
+- [workflows/events](https://docs.duckflux.openvibes.tech/workflows/events/): Emit events and wait for them — event-driven communication within and across duckflux workflows.
+- [workflows/error-handling](https://docs.duckflux.openvibes.tech/workflows/error-handling/): Configure how workflows respond to failures — stop, skip, retry, or redirect to a fallback participant.
+- [workflows/nested-workflows](https://docs.duckflux.openvibes.tech/workflows/nested-workflows/): Compose and reuse workflows by calling other workflow files as steps.
+- [workflows/runtimes](https://docs.duckflux.openvibes.tech/workflows/runtimes/): Install a duckflux runtime and run your first workflow from the command line.
+
+## Runner CLI (Go)
+
+- [runner-cli/introduction](https://docs.duckflux.openvibes.tech/runner-cli/introduction/): Introdução ao Runner CLI.
+- [runner-cli/installation](https://docs.duckflux.openvibes.tech/runner-cli/installation/): Como instalar o Runner CLI.
+- [runner-cli/running-workflows](https://docs.duckflux.openvibes.tech/runner-cli/running-workflows/): Executando workflows com o Runner CLI.
+- [runner-cli/linting-validation](https://docs.duckflux.openvibes.tech/runner-cli/linting-validation/): Ferramentas de lint/validação para workflows.
+- [runner-cli/event-hubs-channels](https://docs.duckflux.openvibes.tech/runner-cli/event-hubs-channels/): Configure and use event hub backends in the duckflux Runner CLI — memory, NATS JetStream, and Redis Streams.
+
+## JavaScript runtime
+
+- [runtime/cli](https://docs.duckflux.openvibes.tech/runtime/cli/): How to use the DuckFlux CLI to run workflows.
+- [runtime/event-hub-providers](https://docs.duckflux.openvibes.tech/runtime/event-hub-providers/): How to connect the runtime to event hubs and channels.
+- [runtime/library](https://docs.duckflux.openvibes.tech/runtime/library/): How to embed the DuckFlux runtime into your own JavaScript or TypeScript application.
+
+## Example
+
+- [getting-started/a-real-world-example](https://docs.duckflux.openvibes.tech/getting-started/a-real-world-example/): An agentic coding pipeline — planner, task queue, coder, and reviewer — built with duckflux and Claude Code.

@@ -13,13 +13,13 @@ This is the primary mechanism for breaking large workflows into manageable, test
 
 ## The `workflow` participant type
 
-A participant of type `workflow` delegates execution to another `.flow.yaml` file:
+A participant of type `workflow` delegates execution to another `.flux.yaml` file:
 
 ```yaml
 participants:
   reviewCycle:
     type: workflow
-    path: ./review-loop.flow.yaml
+    path: ./review-loop.flux.yaml
     input:
       repo: workflow.inputs.repoUrl
       branch: workflow.inputs.branch
@@ -47,7 +47,7 @@ Define the sub-workflow in the `participants` block and reference it by name in 
 participants:
   reviewCycle:
     type: workflow
-    path: ./review-loop.flow.yaml
+    path: ./review-loop.flux.yaml
     input:
       repo: workflow.inputs.repoUrl
       branch: workflow.inputs.branch
@@ -67,7 +67,7 @@ flow:
   - coder
   - as: reviewCycle
     type: workflow
-    path: ./review-loop.flow.yaml
+    path: ./review-loop.flux.yaml
     input:
       repo: workflow.inputs.repoUrl
   - deploy
@@ -89,7 +89,7 @@ The `input` field maps data from the parent workflow to the sub-workflow's decla
 participants:
   analyze:
     type: workflow
-    path: ./analyze.flow.yaml
+    path: ./analyze.flux.yaml
     input:
       repo: workflow.inputs.repoUrl
       commit: coder.output.commitSha
@@ -122,7 +122,7 @@ flow:
 The output exposed to the parent is whatever the sub-workflow defines in its own `output` block. If the sub-workflow has no `output` block, the output of its last executed step is used.
 
 ```yaml
-# review-loop.flow.yaml
+# review-loop.flux.yaml
 flow:
   - loop:
       until: reviewer.output.approved == true
@@ -173,7 +173,7 @@ flow:
       steps:
         - as: reviewCycle
           type: workflow
-          path: ./review-cycle.flow.yaml
+          path: ./review-cycle.flux.yaml
           input:
             round: attempt.iteration
 ```
@@ -188,13 +188,13 @@ flow:
       then:
         - as: deploy
           type: workflow
-          path: ./deploy.flow.yaml
+          path: ./deploy.flux.yaml
           input:
             env: workflow.inputs.targetEnv
       else:
         - as: notify
           type: workflow
-          path: ./notify-failure.flow.yaml
+          path: ./notify-failure.flux.yaml
 ```
 
 ### Inside parallel
@@ -204,13 +204,13 @@ flow:
   - parallel:
       - as: lintCheck
         type: workflow
-        path: ./lint.flow.yaml
+        path: ./lint.flux.yaml
       - as: securityScan
         type: workflow
-        path: ./security.flow.yaml
+        path: ./security.flux.yaml
       - as: buildArtifact
         type: workflow
-        path: ./build.flow.yaml
+        path: ./build.flux.yaml
 ```
 
 All three sub-workflows run concurrently. Their outputs are available after the `parallel` block completes.
@@ -222,7 +222,7 @@ All three sub-workflows run concurrently. Their outputs are available after the 
 A parent pipeline that orchestrates three sub-workflows — a review cycle, a build, and a deployment — using outputs from each step to drive the next:
 
 ```yaml
-# pipeline.flow.yaml
+# pipeline.flux.yaml
 id: release-pipeline
 name: Release Pipeline
 version: "1"
@@ -244,7 +244,7 @@ inputs:
 participants:
   reviewCycle:
     type: workflow
-    path: ./review-cycle.flow.yaml
+    path: ./review-cycle.flux.yaml
     input:
       branch: workflow.inputs.branch
       maxRounds: workflow.inputs.max_review_rounds
@@ -253,7 +253,7 @@ participants:
 
   buildArtifact:
     type: workflow
-    path: ./build.flow.yaml
+    path: ./build.flux.yaml
     input:
       branch: workflow.inputs.branch
       commitSha: reviewCycle.output.commitSha
@@ -261,7 +261,7 @@ participants:
 
   deployRelease:
     type: workflow
-    path: ./deploy.flow.yaml
+    path: ./deploy.flux.yaml
     input:
       artifact: buildArtifact.output.artifactUrl
       environment: workflow.inputs.environment

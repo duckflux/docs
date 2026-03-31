@@ -98,13 +98,13 @@ Inputs can be provided via the CLI in three equivalent ways (highest priority wi
 
 ```bash
 # Inline flags
-duckflux run deploy.flow.yaml --input branch=main --input env=staging
+duckflux run deploy.flux.yaml --input branch=main --input env=staging
 
 # JSON file
-duckflux run deploy.flow.yaml --input-file inputs.json
+duckflux run deploy.flux.yaml --input-file inputs.json
 
 # Piped JSON via stdin
-echo '{"branch": "main", "env": "staging"}' | duckflux run deploy.flow.yaml
+echo '{"branch": "main", "env": "staging"}' | duckflux run deploy.flux.yaml
 ```
 
 Resolution priority: `--input` flags > `--input-file` > stdin.

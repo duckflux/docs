@@ -1,9 +1,9 @@
 ---
-title: Running the workflow
+title: Runtimes
 description: Install a duckflux runtime and run your first workflow from the command line.
 ---
 
-import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
 
 Duckflux workflows are plain YAML files — they don't run on their own. You need a **runtime** to execute them.
 
@@ -15,6 +15,11 @@ Two official runtimes are available:
 | **JavaScript runtime** | Node.js | Scripting, custom participants, JS ecosystems |
 
 Both runtimes share the same `quack` command and behave identically for standard workflows.
+
+<CardGrid>
+  <LinkCard title="Runner CLI (Go)" href="/runner-cli/installation/" description="Production-ready CLI runner written in Go." />
+  <LinkCard title="JavaScript Runtime" href="/javascript-runtime/installation/" description="TypeScript runtime for Node.js and Bun." />
+</CardGrid>
 
 ---
 
@@ -33,10 +38,10 @@ Both runtimes share the same `quack` command and behave identically for standard
 
 ## Run a workflow
 
-Once a runtime is installed, use `quack` to run any `.flow.yaml` file:
+Once a runtime is installed, use `quack` to run any `.flux.yaml` file:
 
 ```sh
-quack hello.flow.yaml
+quack hello.flux.yaml
 ```
 
 That's the full command. The runtime reads the file, executes the flow, and prints the output.
@@ -46,7 +51,7 @@ That's the full command. The runtime reads the file, executes the flow, and prin
 Use `--cwd` to set the base working directory for `exec` participants:
 
 ```sh
-quack deploy.flow.yaml --cwd ./repo
+quack deploy.flux.yaml --cwd ./repo
 ```
 
 This is equivalent to setting `defaults.cwd` in the workflow file itself, but applied from the command line. Useful when the workflow is shared but the working directory varies per environment.

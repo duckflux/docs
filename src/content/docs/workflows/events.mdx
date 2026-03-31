@@ -253,7 +253,7 @@ output: publisher.output.ack
 Events are shared between parent and sub-workflows. The event hub instance is passed down to all `type: workflow` participants, so events emitted in a parent are visible to sub-workflows and vice versa.
 
 ```yaml
-# parent.flow.yaml
+# parent.flux.yaml
 participants:
   trigger:
     type: emit
@@ -263,7 +263,7 @@ participants:
 
   child:
     type: workflow
-    path: ./child.flow.yaml
+    path: ./child.flux.yaml
 
 flow:
   - trigger     # publishes job.started
@@ -271,7 +271,7 @@ flow:
 ```
 
 ```yaml
-# child.flow.yaml
+# child.flux.yaml
 flow:
   - wait:
       event: "job.started"

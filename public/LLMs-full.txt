@@ -1,0 +1,5416 @@
+# duckflux — full reference documentation
+
+
+---
+
+# A real-world example
+> An agentic coding pipeline — planner, task queue, coder, and reviewer — built with duckflux and Claude Code.
+
+
+This example walks through a real agentic pipeline: a **planner** breaks work into tasks, then a loop pulls each task from a queue, a **coder** agent implements it, and a **reviewer** agent checks it. Everything is orchestrated by a single duckflux workflow.
+
+---
+
+## What we're building
+
+```
+planner
+  └─ breaks the goal into tasks, stores them in a task queue
+loop (up to 3 iterations)
+  ├─ http → fetch next task from the queue
+  ├─ coder → implement the task (Claude Code)
+  └─ reviewer → review the code (Claude Code)
+```
+
+Each agent runs as an `exec` participant invoking `claude` CLI commands. The loop repeats until there are no more tasks or the iteration limit is reached.
+
+---
+
+## The workflow
+
+```yaml
+id: agentic-coding-pipeline
+name: Agentic Coding Pipeline
+version: "0.3"
+
+defaults:
+  timeout: 10m
+  cwd: ./repo
+
+inputs:
+  goal:
+    type: string
+    required: true
+    description: "High-level description of what needs to be built"
+  taskQueueUrl:
+    type: string
+    required: true
+    description: "URL of the task queue API"
+  maxRounds:
+    type: integer
+    default: 3
+    minimum: 1
+    maximum: 10
+
+participants:
+  planner:
+    type: exec
+    run: >
+      claude -p
+      "You are a software planner. Break the following goal into a list of
+      discrete coding tasks. Return a JSON array of task objects with fields
+      'id' and 'description'. Goal: " + workflow.inputs.goal
+    timeout: 5m
+    output:
+      type: array
+      items:
+        type: object
+        required: true
+
+  fetchTask:
+    type: http
+    url: workflow.inputs.taskQueueUrl + "/next"
+    method: GET
+    headers:
+      Accept: application/json
+
+  coder:
+    type: exec
+    run: >
+      claude -p
+      "You are a senior software engineer. Implement the following task in the
+      current repository. Apply the changes directly to the codebase.
+      Task: " + fetchTask.output.description
+    timeout: 15m
+    onError: retry
+    retry:
+      max: 2
+      backoff: 10s
+
+  reviewer:
+    type: exec
+    run: >
+      claude -p
+      "You are a code reviewer. Review the changes just made for the following
+      task. Check for correctness, edge cases, and code quality. Return a JSON
+      object with fields 'approved' (boolean) and 'feedback' (string).
+      Task: " + fetchTask.output.description
+    timeout: 10m
+    output:
+      approved:
+        type: boolean
+        required: true
+      feedback:
+        type: string
+
+flow:
+  # Step 1 — planner breaks the goal into tasks
+  - planner
+
+  # Step 2 — loop up to maxRounds: fetch → code → review
+  - loop:
+      max: workflow.inputs.maxRounds
+      steps:
+        - fetchTask
+
+        - coder:
+            input:
+              task: fetchTask.output.description
+
+        - reviewer:
+            input:
+              task: fetchTask.output.description
+
+output:
+  approved: reviewer.output.approved
+  feedback: reviewer.output.feedback
+  rounds: loop.iteration
+```
+
+---
+
+## Walking through it
+
+### Planner
+
+The planner receives the high-level `goal` from workflow inputs and instructs Claude to break it down into tasks. It returns a JSON array, which the runtime parses automatically — making fields like `planner.output[0].id` accessible downstream.
+
+### The loop
+
+```yaml
+- loop:
+    max: workflow.inputs.maxRounds
+    steps:
+      - fetchTask
+      - coder
+      - reviewer
+```
+
+Each iteration runs three steps in sequence. The loop runs at most `maxRounds` times (default: 3). `loop.iteration` tracks which round is running.
+
+### Fetching the next task
+
+```yaml
+fetchTask:
+  type: http
+  url: workflow.inputs.taskQueueUrl + "/next"
+  method: GET
+```
+
+A simple GET request to a task queue API. The response (a task object with `id` and `description`) becomes `fetchTask.output`, available to the coder and reviewer in the same iteration.
+
+### Coder and reviewer
+
+Both are `exec` participants that invoke `claude -p` with a prompt built from the task description. The reviewer outputs structured JSON — the runtime parses it, so `reviewer.output.approved` and `reviewer.output.feedback` are accessible as typed fields.
+
+The coder has `onError: retry` with a backoff, so transient failures (model timeouts, flaky shell state) get a second chance before the workflow stops.
+
+---
+
+## Extending this workflow
+
+A few natural next steps:
+
+**Stop when tasks are exhausted** — add an `until` condition to the loop that checks if `fetchTask.output` is empty:
+```yaml
+loop:
+  until: fetchTask.output == null
+  max: workflow.inputs.maxRounds
+```
+
+**Re-queue rejected tasks** — after the reviewer, add an `http` step that posts the task back to the queue if `reviewer.output.approved == false`.
+
+**Emit progress events** — add an `emit` step inside the loop to broadcast each completed round to external listeners:
+```yaml
+- as: notifyRound
+  type: emit
+  event: "round.completed"
+  payload:
+    round: loop.iteration
+    approved: reviewer.output.approved
+    feedback: reviewer.output.feedback
+```
+
+<Aside type="tip">
+  This pattern — a planner producing work, a loop consuming it, agents implementing and reviewing — is reusable across many agentic workflows. Swap `claude -p` for any other CLI-based agent or model.
+</Aside>
+
+---
+
+# Workflow files
+> The structure of a duckflux workflow file — top-level fields, defaults, conventions, and a complete annotated example.
+
+
+A duckflux workflow is a plain YAML file. The only required field is `flow`. Everything else is optional.
+
+---
+
+## The minimal workflow
+
+```yaml
+flow:
+  - type: exec
+    run: echo "Hello, duckflux!"
+```
+
+That's a complete, runnable workflow. No metadata, no configuration, no schema. The runtime runs the step and exits.
+
+---
+
+## Top-level fields
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `version` | no | string | Spec version. Default: `"0.3"`. |
+| `id` | no | string | Unique identifier for the workflow definition. |
+| `name` | no | string | Human-readable name. |
+| `defaults` | no | object | Global defaults applied to all participants. |
+| `inputs` | no | object | Parameters the workflow accepts from its caller. |
+| `participants` | no | object | Named, reusable step definitions. |
+| `flow` | **yes** | array | The execution sequence. |
+| `output` | no | string or object | Final result mapping. Defaults to the last step's output. |
+
+---
+
+## `version`
+
+Declares which version of the duckflux spec the workflow targets. Used by the runtime for compatibility checks.
+
+```yaml
+version: "0.3"
+```
+
+If omitted, the runtime assumes the current spec version. Always quote it as a string to avoid YAML interpreting it as a number.
+
+---
+
+## `id` and `name`
+
+Optional metadata. `id` is a machine-readable identifier; `name` is for human display.
+
+```yaml
+id: code-review-pipeline
+name: Code Review Pipeline
+```
+
+Both are accessible in CEL expressions as `workflow.id` and `workflow.name`.
+
+---
+
+## `defaults`
+
+Global defaults applied to all participants that don't define their own values.
+
+```yaml
+defaults:
+  timeout: 10m
+  cwd: ./repo
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `timeout` | duration | Default maximum execution time per step. |
+| `cwd` | string | Default working directory for `exec` participants. |
+
+**Timeout precedence:**
+```
+flow-level > participant-level > defaults > runtime default (no timeout)
+```
+
+**Working directory precedence:**
+```
+participant.cwd > defaults.cwd > CLI --cwd > process cwd
+```
+
+<Aside type="tip">
+  Set `defaults.timeout` to a conservative value for all workflows that talk to external services or run long commands. It prevents a stuck step from blocking the entire execution indefinitely.
+</Aside>
+
+---
+
+## `inputs`
+
+Declares the parameters the workflow accepts from its caller. Fields without schema are treated as strings.
+
+```yaml
+inputs:
+  repoUrl:
+  branch:
+    type: string
+    default: "main"
+  maxRetries:
+    type: integer
+    default: 3
+    minimum: 1
+    maximum: 10
+```
+
+Accessible in CEL as `workflow.inputs.<field>`. See [Inputs & Outputs](/workflows/inputs-outputs/) for the full schema reference and how to pass values at runtime.
+
+---
+
+## `participants`
+
+Named, reusable step definitions. Referenced by name in the `flow`.
+
+```yaml
+participants:
+  build:
+    type: exec
+    run: npm run build
+    timeout: 5m
+
+  notify:
+    type: http
+    url: https://hooks.example.com/done
+    method: POST
+    onError: skip
+```
+
+Participants can also be defined inline in the `flow` — see [Participants](/workflows/participants/) for all three definition modes.
+
+---
+
+## `flow`
+
+The execution sequence. The only required top-level field.
+
+```yaml
+flow:
+  - build
+  - parallel:
+      - test
+      - lint
+  - if:
+      condition: test.status == "success"
+      then:
+        - deploy
+      else:
+        - notify
+```
+
+Each element is one of:
+- A **participant reference** (string)
+- An **inline participant** (object with `type`)
+- A **control flow construct** (`loop`, `parallel`, `if`, `wait`)
+- A **participant reference with overrides** (object with participant name as key)
+
+See the individual pages for [Loops](/workflows/loops/), [Parallel](/workflows/parallel/), and [Conditionals](/workflows/conditionals/).
+
+---
+
+## `output`
+
+Defines what the workflow returns to its caller. If omitted, the output of the last executed step is returned.
+
+```yaml
+# Single value
+output: reviewer.output.summary
+
+# Structured mapping
+output:
+  approved: reviewer.output.approved
+  score: reviewer.output.score
+  testResult: tests.status
+```
+
+See [Inputs & Outputs](/workflows/inputs-outputs/) for the full mapping and schema validation reference.
+
+---
+
+## File naming
+
+duckflux doesn't enforce a file naming convention, but the following pattern is widely used:
+
+```
+<name>.flux.yaml
+```
+
+Examples: `deploy.flux.yaml`, `review-loop.flux.yaml`, `ci.flux.yaml`.
+
+The `.flux.yaml` double extension makes workflows easy to distinguish from regular config files and glob with a single pattern (`**/*.flux.yaml`).
+
+<Aside>
+  When using `type: workflow` to reference a sub-workflow, paths are resolved **relative to the parent workflow's directory** — not the working directory of the process. Keep sub-workflows in the same directory or a subdirectory of their parent.
+</Aside>
+
+---
+
+## Complete annotated example
+
+```yaml
+# Spec version (optional, defaults to current)
+version: "0.3"
+
+# Machine-readable identifier
+id: deploy-pipeline
+
+# Human-readable name
+name: Deployment Pipeline
+
+# Global defaults for all participants
+defaults:
+  timeout: 10m
+  cwd: ./repo
+
+# Workflow input parameters
+inputs:
+  branch:
+    type: string
+    default: "main"
+  env:
+    type: string
+    required: true
+  maxRetries:
+    type: integer
+    default: 3
+    minimum: 1
+    maximum: 5
+
+# Named, reusable participants
+participants:
+  build:
+    type: exec
+    run: ./build.sh
+    timeout: 15m
+    onError: retry
+    retry:
+      max: 2
+      backoff: 5s
+    input:
+      branch: workflow.inputs.branch
+    output:
+      artifact:
+        type: string
+        required: true
+      version:
+        type: string
+
+  test:
+    type: exec
+    run: npm test
+    timeout: 5m
+    onError: fail
+
+  lint:
+    type: exec
+    run: npm run lint
+    timeout: 2m
+    onError: skip
+
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    timeout: 10m
+    input:
+      artifact: build.output.artifact
+      env: workflow.inputs.env
+
+  notifySuccess:
+    type: http
+    url: https://hooks.example.com/success
+    method: POST
+    onError: skip
+
+  notifyFailure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+
+# Execution sequence
+flow:
+  - build
+
+  - parallel:
+      - test
+      - lint
+
+  - deploy:
+      when: test.status == "success"
+
+  - if:
+      condition: deploy.status == "success"
+      then:
+        - notifySuccess
+      else:
+        - notifyFailure
+
+# Final result returned to the caller
+output:
+  artifact: build.output.artifact
+  version: build.output.version
+  deployed: deploy.status
+  env: workflow.inputs.env
+```
+
+---
+
+# Participants
+> The atomic unit of work in duckflux — how to define, name, and reuse participants across your workflows.
+
+
+A **participant** is the atomic unit of work in a duckflux workflow. Every step that does something — run a command, call an API, invoke an MCP tool, emit an event — is a participant. The flow is just an ordered sequence of participants.
+
+Participants are designed around a single interface: **input in, output out**. Regardless of type, every participant receives data, does work, and produces a result. This uniformity is what makes workflows composable.
+
+---
+
+## The simplest form — anonymous inline
+
+The simplest way to define a participant is to write it directly in the `flow`, without any name:
+
+```yaml
+flow:
+  - type: exec
+    run: npm test
+
+  - type: exec
+    run: npm run build
+
+  - type: http
+    url: https://hooks.example.com/done
+    method: POST
+```
+
+That's it. No `participants` block, no names. Each step runs in order, and its output is automatically passed to the next step via the implicit I/O chain — analogous to Unix pipes.
+
+Anonymous participants are the default starting point. Add naming and reuse only when you need them.
+
+<Aside type="caution">
+  Anonymous participants cannot be referenced in CEL expressions by name. If you ever need to access a step's output from a later step — even conditionally — give it a name with `as`.
+</Aside>
+
+---
+
+## Adding a name — named inline
+
+When you need to reference a step's output downstream, add the `as` field directly in the `flow`:
+
+```yaml
+flow:
+  - as: build
+    type: exec
+    run: npm run build
+    timeout: 5m
+
+  - as: deploy
+    type: exec
+    run: ./deploy.sh
+    when: build.status == "success"
+
+  - as: notify
+    type: emit
+    event: "deploy.completed"
+    payload:
+      artifact: build.output.artifactPath
+      status: deploy.status
+```
+
+The `as` value becomes the step's addressable name. You can reference `build.output`, `build.status`, `deploy.status`, and so on in any downstream CEL expression.
+
+Named inline participants are still defined in the `flow` — they are not reusable elsewhere. But they keep the definition co-located with where the step is used, which is usually the right tradeoff for one-off steps.
+
+The `as` value must be unique across the entire workflow — it cannot conflict with any key in the `participants` block or any other `as` value in the flow.
+
+---
+
+## Extracting for reuse — reusable participants
+
+When the same step needs to appear more than once, or when the configuration is complex enough to deserve its own section, move it to the top-level `participants` block:
+
+```yaml
+participants:
+  coder:
+    type: exec
+    run: ./code.sh
+    onError: retry
+    retry:
+      max: 2
+      backoff: 2s
+
+  reviewer:
+    type: exec
+    run: ./review.sh
+    output:
+      approved:
+        type: boolean
+        required: true
+      score:
+        type: integer
+
+flow:
+  - coder
+  - loop:
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - reviewer
+        - coder:
+            when: reviewer.output.approved == false
+```
+
+Here, `coder` is referenced twice — once before the loop and once inside it. Reusable participants make this possible. The `flow` stays clean and readable, with all the detail in the `participants` block.
+
+---
+
+## Comparing the three modes
+
+| | Anonymous inline | Named inline | Reusable |
+|---|---|---|---|
+| Defined in | `flow` (no `as`) | `flow` (with `as`) | `participants` block |
+| Output addressable by name | No | Yes | Yes |
+| Output accessible via chain | Yes | Yes | Yes |
+| Can appear multiple times | No | No | Yes |
+| Best for | Simple pipeline steps | One-off named steps | Shared steps, complex config |
+
+---
+
+## The implicit I/O chain
+
+Every participant's output is automatically passed as input to the **next sequential step**, regardless of definition mode. This forms a chain analogous to Unix pipes.
+
+```yaml
+flow:
+  - type: exec
+    run: echo "hello"                          # output: "hello"
+
+  - as: shout
+    type: exec
+    run: tr '[:lower:]' '[:upper:]'            # input: "hello" → output: "HELLO"
+
+  - type: http
+    url: https://api.example.com/log
+    method: POST
+    body: input                                # input: "HELLO"
+```
+
+When a participant also has an explicit `input` mapping, the runtime merges the chained value with the explicit mapping. Explicit mapping takes precedence on conflict.
+
+See [Inputs & Outputs](/workflows/inputs-outputs/) for the full merge and precedence rules.
+
+---
+
+## Reserved names
+
+The following identifiers are reserved and cannot be used as participant names — either as keys in the `participants` block or as `as` values:
+
+```
+workflow  execution  input  output  env  loop  event
+```
+
+A workflow using a reserved name as a participant identifier will be rejected at parse time.
+
+---
+
+## Complete example
+
+A workflow that uses all three definition modes together:
+
+```yaml
+id: review-pipeline
+name: Review Pipeline
+version: "1"
+
+participants:
+  # reusable — referenced twice in the flow
+  coder:
+    type: exec
+    run: ./code.sh
+    onError: retry
+    retry:
+      max: 2
+      backoff: 2s
+
+  reviewer:
+    type: exec
+    run: ./review.sh
+    output:
+      approved:
+        type: boolean
+        required: true
+      score:
+        type: integer
+
+flow:
+  # anonymous — output chains into the loop
+  - type: exec
+    run: echo "starting review cycle"
+
+  - loop:
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - coder
+        - reviewer
+
+  # named inline — used once, output referenced downstream
+  - as: packager
+    type: exec
+    run: ./package.sh
+    input:
+      code: coder.output
+
+  - as: notifyResult
+    type: emit
+    event: "review.completed"
+    payload:
+      approved: reviewer.output.approved
+      score: reviewer.output.score
+      artifact: packager.output.path
+
+output:
+  approved: reviewer.output.approved
+  score: reviewer.output.score
+```
+
+---
+
+# Participant types
+> Reference for all participant types in duckflux — exec, http, mcp, workflow, and emit — including their fields and usage examples.
+
+
+A participant is the atomic unit of work in a duckflux workflow. Each participant has a `type` that determines how it executes. All participants share a set of common fields, and each type adds its own specific fields on top.
+
+---
+
+## Common fields
+
+These fields are available on every participant type:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | — | **Required.** The participant type (`exec`, `http`, `mcp`, `workflow`, `emit`). |
+| `as` | string | — | Display name. Required for reusable participants; optional for inline ones. Enables output reference by name. |
+| `timeout` | duration | from `defaults` | Maximum execution time. Treated as a failure when exceeded. |
+| `onError` | string | `fail` | Error handling strategy. See [Error Handling](/workflows/error-handling/). |
+| `retry` | object | — | Retry configuration. Only applies when `onError: retry`. |
+| `input` | string or object | — | Explicit input mapping via CEL expressions. See [Inputs & Outputs](/workflows/inputs-outputs/). |
+| `output` | object | — | Output schema (JSON Schema, opt-in). |
+
+---
+
+## `exec` — Shell command
+
+Runs a shell command in the host environment. Use this for builds, tests, linting, deployments, or any operation that can be expressed as a terminal command.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `run` | string | **Required.** The shell command to execute. |
+| `cwd` | string | Working directory. Supports CEL expressions. |
+
+### Examples
+
+<Tabs>
+  <TabItem label="Basic">
+    ```yaml
+    participants:
+      build:
+        type: exec
+        run: npm run build
+    ```
+  </TabItem>
+  <TabItem label="With timeout and retry">
+    ```yaml
+    participants:
+      test:
+        type: exec
+        run: npm test
+        timeout: 5m
+        onError: retry
+        retry:
+          max: 3
+          backoff: 5s
+          factor: 2
+    ```
+  </TabItem>
+  <TabItem label="With dynamic cwd">
+    ```yaml
+    participants:
+      build:
+        type: exec
+        run: npm run build
+        cwd: workflow.inputs.packagePath
+    ```
+  </TabItem>
+</Tabs>
+
+The `cwd` field accepts either a literal path or a CEL expression. Precedence for working directory resolution:
+
+```
+participant.cwd > defaults.cwd > CLI --cwd > process cwd
+```
+
+<Aside type="tip">
+  The output of an `exec` participant is the stdout of the command. If stdout is valid JSON, the runtime will parse it automatically — making fields accessible as `<step>.output.<field>` in downstream CEL expressions.
+</Aside>
+
+---
+
+## `http` — HTTP request
+
+Sends an HTTP request to an external URL. Use this for API integration, webhooks, and external service calls.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `url` | string | **Required.** Target URL. Supports CEL expressions. |
+| `method` | string | HTTP method: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. |
+| `headers` | object | HTTP headers. Values support CEL expressions. |
+| `body` | string or object | Request body. Supports CEL expressions. |
+
+### Examples
+
+<Tabs>
+  <TabItem label="GET request">
+    ```yaml
+    participants:
+      fetchStatus:
+        type: http
+        url: https://api.example.com/status
+        method: GET
+    ```
+  </TabItem>
+  <TabItem label="POST with dynamic body">
+    ```yaml
+    participants:
+      notifySlack:
+        type: http
+        url: https://hooks.slack.com/services/T000/B000/xxxx
+        method: POST
+        headers:
+          Content-Type: application/json
+        body:
+          text: '"Deployment completed: " + deploy.output.version'
+    ```
+  </TabItem>
+  <TabItem label="Dynamic URL">
+    ```yaml
+    participants:
+      fetchUser:
+        type: http
+        url: '"https://api.example.com/users/" + workflow.inputs.userId'
+        method: GET
+        headers:
+          Authorization: '"Bearer " + env.API_TOKEN'
+    ```
+  </TabItem>
+</Tabs>
+
+<Aside>
+  All `url`, `headers` values, and `body` values support CEL expressions. String concatenation and variable interpolation work as expected — just wrap the expression in quotes as a YAML string value.
+</Aside>
+
+---
+
+## `mcp` — MCP tool call
+
+Delegates a task to an MCP (Model Context Protocol) server. Use this to invoke tools exposed by external MCP servers or integrations.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `server` | string | **Required.** MCP server identifier. |
+| `tool` | string | **Required.** MCP tool name to invoke. |
+
+### Example
+
+```yaml
+participants:
+  codeReviewer:
+    type: mcp
+    server: claude
+    tool: code_review
+    input:
+      code: coder.output
+      language: workflow.inputs.language
+
+flow:
+  - coder
+  - codeReviewer
+```
+
+<Aside type="tip">
+  The `input` mapping passes data to the MCP tool as arguments. Use structured input (object with CEL values) to map specific fields from the workflow context to the tool's expected parameters.
+</Aside>
+
+---
+
+## `workflow` — Sub-workflow
+
+References another duckflux workflow file as a step. Use this to compose large workflows from smaller, reusable pieces.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | string | **Required.** Path to the sub-workflow YAML file, resolved relative to the parent workflow's directory. |
+
+### Example
+
+```yaml
+participants:
+  reviewCycle:
+    type: workflow
+    path: ./review-loop.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+      branch: workflow.inputs.branch
+
+flow:
+  - coder
+  - reviewCycle
+  - deploy
+```
+
+The sub-workflow's output is accessible as `reviewCycle.output` in the parent. `onError` and `timeout` from the parent apply to the sub-workflow as a whole.
+
+See [Nested Workflows](/workflows/nested-workflows/) for full composition semantics.
+
+---
+
+## `emit` — Event
+
+Publishes an event to the workflow's event hub. Use this to broadcast state changes, trigger external listeners, or communicate between parallel branches.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | **Required.** Event name to emit. |
+| `payload` | string or object | Event payload. A single CEL expression or a map of CEL expression values. |
+| `ack` | boolean | If `true`, blocks until the event hub confirms delivery. Default: `false`. |
+| `onTimeout` | string | Behavior when the ack deadline expires: `fail` (default) or `skip`. Only applies when `ack: true`. |
+
+### Fire-and-forget vs acknowledged
+
+By default, `emit` dispatches the event and continues immediately:
+
+```yaml
+- as: notify
+  type: emit
+  event: "build.started"
+  payload: build.output
+```
+
+With `ack: true`, the step blocks until delivery is confirmed. Combine with `timeout` to cap the wait:
+
+```yaml
+- as: notifyCritical
+  type: emit
+  event: "deploy.started"
+  payload: deploy.output
+  ack: true
+  timeout: 10s
+  onTimeout: skip
+```
+
+### Payload formats
+
+A single CEL expression (passes the value directly):
+
+```yaml
+payload: coder.output
+```
+
+A structured object with CEL expression values:
+
+```yaml
+payload:
+  taskId: workflow.inputs.taskId
+  status: coder.output.status
+  startedAt: execution.startedAt
+```
+
+<Aside>
+  Events emitted via `emit` are also propagated **internally** within the same workflow. A `wait` step can react to events published by earlier steps in the same execution. See [Events](/workflows/events/) for the full guide on emit, wait, and event-driven patterns.
+</Aside>
+
+---
+
+## Choosing the right type
+
+| You want to… | Use |
+|---|---|
+| Run a shell command, script, or CLI tool | `exec` |
+| Call an external API or send a webhook | `http` |
+| Invoke a tool on an MCP server | `mcp` |
+| Reuse a workflow from another file | `workflow` |
+| Broadcast an event to listeners | `emit` |
+
+---
+
+## Complete example
+
+A pipeline combining all five participant types:
+
+```yaml
+id: full-pipeline
+name: Full Pipeline
+version: "1"
+
+defaults:
+  timeout: 10m
+
+inputs:
+  repoUrl:
+    type: string
+    required: true
+  branch:
+    type: string
+    default: "main"
+
+participants:
+  # exec — run tests locally
+  runTests:
+    type: exec
+    run: npm test
+    timeout: 5m
+    onError: fail
+
+  # http — fetch external config
+  fetchConfig:
+    type: http
+    url: '"https://config.example.com/apps/" + workflow.inputs.branch'
+    method: GET
+    headers:
+      Authorization: '"Bearer " + env.CONFIG_TOKEN'
+
+  # mcp — delegate code review to an MCP tool
+  codeReview:
+    type: mcp
+    server: claude
+    tool: review_pull_request
+    input:
+      repo: workflow.inputs.repoUrl
+      branch: workflow.inputs.branch
+
+  # workflow — run deployment as a sub-workflow
+  deploy:
+    type: workflow
+    path: ./deploy.flux.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+
+  # emit — notify on completion
+  notifyComplete:
+    type: emit
+    event: "pipeline.completed"
+    payload:
+      branch: workflow.inputs.branch
+      testStatus: runTests.status
+      reviewApproved: codeReview.output.approved
+    ack: true
+    timeout: 5s
+    onError: skip
+
+flow:
+  - fetchConfig
+
+  - parallel:
+      - runTests
+      - codeReview
+
+  - deploy:
+      when: runTests.status == "success" && codeReview.output.approved == true
+
+  - notifyComplete
+
+output:
+  testStatus: runTests.status
+  reviewApproved: codeReview.output.approved
+  deployStatus: deploy.status
+```
+
+---
+
+# Inputs and outputs
+> How to declare and pass data into workflows, between participants, and back to the caller.
+
+
+duckflux follows a single principle for data flow: **string by default, schema on demand**. Every participant receives and returns a string unless you explicitly define a schema — just like stdin/stdout, the universal interface. This means a workflow with zero input configuration still works, and you only add schema when you need validation or typed access.
+
+---
+
+## Core principle: string by default
+
+All I/O is optional. A minimal workflow with no `inputs`, no `output`, and no `input` mapping on any participant is completely valid:
+
+```yaml
+participants:
+  greet:
+    type: exec
+    run: echo "Hello, duckflux!"
+
+flow:
+  - greet
+```
+
+No schema required. The workflow runs, and the output is whatever `greet` printed to stdout — a plain string.
+
+Schema is **opt-in** at every level. When defined, it uses JSON Schema syntax (written in YAML) for validation and typed access.
+
+---
+
+## Workflow inputs
+
+The top-level `inputs` block declares what parameters the workflow accepts from its caller.
+
+### String-only (bare keys)
+
+The simplest form: just declare the names. Every field is treated as a string with no validation:
+
+```yaml
+inputs:
+  repoUrl:
+  branch:
+  env:
+```
+
+These are accessible in any CEL expression as `workflow.inputs.repoUrl`, `workflow.inputs.branch`, `workflow.inputs.env`.
+
+### With schema
+
+Add JSON Schema properties to each field for type validation, defaults, and documentation:
+
+```yaml
+inputs:
+  repoUrl:
+    type: string
+    format: uri
+    required: true
+    description: "Repository URL to deploy from"
+  branch:
+    type: string
+    default: "main"
+  maxRetries:
+    type: integer
+    minimum: 1
+    maximum: 10
+    default: 3
+  tags:
+    type: array
+    items:
+      type: string
+  verbose:
+    type: boolean
+    default: false
+```
+
+<Aside>
+  `required: true` inside a field definition is syntactic sugar — the parser normalizes it to the canonical JSON Schema format at validation time.
+
+  If `type` is not specified, the field is treated as `string`.
+</Aside>
+
+### Supported schema properties
+
+| Property | Description |
+|----------|-------------|
+| `type` | JSON Schema type: `string`, `integer`, `number`, `boolean`, `array`, `object` |
+| `default` | Value used when the caller does not provide the field |
+| `required` | If `true`, the runner rejects the workflow when the field is missing |
+| `description` | Human-readable description (used in `duckflux validate` output) |
+| `format` | String format hint: `uri`, `date`, `email`, etc. |
+| `minimum` / `maximum` | Numeric bounds |
+| `items` | Schema for array items |
+
+### Passing inputs at runtime
+
+Inputs can be provided via the CLI in three equivalent ways (highest priority wins):
+
+```bash
+# Inline flags
+duckflux run deploy.flux.yaml --input branch=main --input env=staging
+
+# JSON file
+duckflux run deploy.flux.yaml --input-file inputs.json
+
+# Piped JSON via stdin
+echo '{"branch": "main", "env": "staging"}' | duckflux run deploy.flux.yaml
+```
+
+Resolution priority: `--input` flags > `--input-file` > stdin.
+
+---
+
+## Participant inputs
+
+The `input` field on a participant maps data from the workflow into that participant before it executes. Values are [CEL expressions](/workflows/variables-and-expressions/) — they can reference `workflow.inputs.*`, `env.*`, other step outputs, and any runtime variable.
+
+### String passthrough (single expression)
+
+Pass a single value as the participant's entire input:
+
+```yaml
+participants:
+  coder:
+    type: exec
+    run: ./generate.sh
+    input: workflow.inputs.taskDescription
+```
+
+The value of `workflow.inputs.taskDescription` is passed as-is — a string.
+
+### Structured mapping
+
+Pass multiple named fields:
+
+```yaml
+participants:
+  coder:
+    type: exec
+    run: ./generate.sh
+    input:
+      task: workflow.inputs.taskDescription
+      context: reviewer.output.feedback
+      repo: workflow.inputs.repoUrl
+```
+
+Each key becomes a named input the participant can read. Values are CEL expressions evaluated at execution time.
+
+### On inline participants
+
+Inline participants (defined directly in the `flow`) use the same `input` field:
+
+```yaml
+flow:
+  - as: notify
+    type: http
+    url: https://hooks.example.com/webhook
+    method: POST
+    input:
+      message: coder.output.summary
+      branch: workflow.inputs.branch
+```
+
+### Flow-level override
+
+When invoking a reusable participant in the flow, you can override its `input` mapping for that specific call. Since v0.5, the flow override **merges** with the participant's declared `input` instead of replacing it:
+
+```yaml
+participants:
+  fetch_page:
+    type: exec
+    input:
+      NOTION_TOKEN: execution.context.token   # base input — always present
+    run: |
+      curl -sS "https://api.notion.com/v1/pages/$(cat)" \
+        -H "Authorization: Bearer ${NOTION_TOKEN}"
+
+flow:
+  # resolved input = { NOTION_TOKEN: execution.context.token, PAGE_ID: workflow.inputs.story_id }
+  - fetch_page:
+      input:
+        PAGE_ID: workflow.inputs.story_id
+
+  - fetch_page:
+      input:
+        PAGE_ID: open_task.output
+```
+
+No need to repeat `NOTION_TOKEN` on every call — it comes from the participant's base `input` and is automatically merged with the flow-level override.
+
+Merge rules match the implicit I/O chain rules:
+
+| Base type | Override type | Result |
+|---|---|---|
+| map | map | Merged — override keys take precedence |
+| string | string | Override takes precedence |
+| Incompatible types | — | Runtime error |
+
+When all three sources are present (chain + participant base + flow override), the merge order is:
+
+```
+chain < participant base input < flow override input
+```
+
+<Aside type="tip">
+  Use participant-level `input` for shared configuration (auth tokens, base URLs), and flow-level overrides for invocation-specific data (page IDs, query parameters). The merge ensures you never have to repeat the shared parts.
+</Aside>
+
+<Aside type="caution">
+  This merge behavior applies only to `input`. All other flow-level overrides (`timeout`, `onError`, `retry`, `when`) still **replace** the participant-level value entirely.
+</Aside>
+
+---
+
+## Participant outputs
+
+Each participant produces output accessible as `<step>.output` in any subsequent CEL expression.
+
+### Default behavior: automatic string and JSON parsing
+
+Without a schema, participant output is a string. The runtime attempts automatic parsing:
+
+1. If the output is valid JSON → accessible as a map (`coder.output.field`, `coder.output.nested.value`)
+2. If not → accessible as a plain string (`coder.output`)
+
+This means a participant that prints `{"approved": true, "score": 9}` to stdout makes `reviewer.output.approved` and `reviewer.output.score` immediately available — no schema required.
+
+### With explicit schema
+
+Define an `output` map on the participant to enable validation. If the step's output does not match the schema, it is treated as a failure and the `onError` strategy applies:
+
+```yaml
+participants:
+  reviewer:
+    type: exec
+    run: ./review.sh
+    output:
+      approved:
+        type: boolean
+        required: true
+      score:
+        type: integer
+        minimum: 0
+        maximum: 10
+      comments:
+        type: string
+```
+
+### Accessing step output
+
+Regardless of whether a schema is defined, step results are accessed the same way in expressions:
+
+```yaml
+# in conditions
+- if:
+    condition: reviewer.output.approved == true
+
+# in guards
+- deploy:
+    when: reviewer.output.score > 7
+
+# in loop exit conditions
+- loop:
+    until: reviewer.output.approved == true
+    max: 5
+    steps:
+      - coder
+      - reviewer
+
+# in input mappings of later steps
+participants:
+  notify:
+    type: http
+    url: https://hooks.example.com/done
+    method: POST
+    input:
+      approved: reviewer.output.approved
+      score: reviewer.output.score
+```
+
+Beyond `.output`, each step also exposes execution metadata:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `<step>.status` | string | `success`, `failure`, or `skipped` |
+| `<step>.output` | string or map | The step's raw output (auto-parsed if JSON) |
+| `<step>.startedAt` | timestamp | When the step started |
+| `<step>.finishedAt` | timestamp | When the step finished |
+| `<step>.duration` | duration | Execution time |
+| `<step>.retries` | int | How many times the step was retried |
+| `<step>.error` | string | Error message when `status == "failure"` |
+
+---
+
+## Workflow output
+
+The top-level `output` block defines what the workflow returns to its caller (CLI, API, or parent workflow when used as a sub-workflow).
+
+**If `output` is not defined, the workflow output is the output of the last executed step.**
+
+### Single value
+
+Map the entire workflow output to a single value:
+
+```yaml
+output: reviewer.output.summary
+```
+
+### Structured mapping
+
+Map individual fields from step outputs:
+
+```yaml
+output:
+  approved: reviewer.output.approved
+  code: coder.output.code
+  summary: reviewer.output.summary
+  testResult: tests.status
+```
+
+### With schema (return validation)
+
+Add a `schema` block alongside `map` to validate the workflow's return value:
+
+```yaml
+output:
+  schema:
+    approved:
+      type: boolean
+      required: true
+    code:
+      type: string
+    summary:
+      type: string
+  map:
+    approved: reviewer.output.approved
+    code: coder.output.code
+    summary: reviewer.output.summary
+```
+
+When schema is provided, the runtime validates the mapped output before returning it to the caller. Validation failure is treated as a workflow-level error.
+
+<Aside>
+  For sub-workflows (participants with `type: workflow`), the `output` defined in the sub-workflow becomes accessible as `<step>.output.*` in the parent workflow — exactly like any other participant output.
+</Aside>
+
+---
+
+## Implicit I/O chain (piping)
+
+The output of each step is **implicitly passed as input** to the next sequential step — analogous to Unix pipes. The chained value is accessible inside the receiving participant via its `input` variable.
+
+```yaml
+flow:
+  - type: exec
+    run: echo '{"score": 9}'
+  - as: notify
+    type: http
+    url: https://hooks.example.com/done
+    method: POST
+    # input.score is the piped output from the previous step
+```
+
+When a participant has **both** a chained input and an explicit `input` mapping, the runtime merges them:
+
+| Chained type | Explicit type | Result |
+|---|---|---|
+| map | map | Merged — explicit keys take precedence |
+| string | string | Explicit takes precedence |
+| Incompatible types | — | Runtime error |
+
+### Chain behavior in control flow
+
+| Construct | Chain output |
+|---|---|
+| `if/then/else` | Output of the last step in the executed branch |
+| `loop` | Output of the last step of the last iteration |
+| `parallel` | Array of outputs from all branches, in declaration order |
+
+<Aside type="tip">
+  The implicit chain is most useful for pipeline-style flows where each step transforms data and passes it forward. For complex data routing, use explicit `input` mappings instead.
+</Aside>
+
+---
+
+## I/O levels at a glance
+
+duckflux has four distinct I/O boundaries:
+
+| Level | Field | Purpose |
+|-------|-------|---------|
+| Workflow inputs | `inputs:` (top-level) | Parameters the workflow accepts from the caller |
+| Participant inputs | `input:` (on a participant) | Data mapped into a specific step before execution |
+| Participant outputs | `output:` (on a participant) | Schema for validating a step's return value |
+| Workflow output | `output:` (top-level) | Final result returned to the workflow's caller |
+
+---
+
+## Precedence summary
+
+**Input resolution** (when multiple sources are present):
+
+```
+chain < participant base input < flow override input
+```
+
+Flow override has highest precedence on key conflicts, then participant base, then chain. Map sources are merged; string sources use the highest-precedence value.
+
+**Schema validation:**
+
+```
+Nothing defined          → string in, string out — no validation
+Bare keys (inputs only)  → named strings, no type validation
+Mapping only             → data passthrough, no schema validation
+With schema              → type/constraint validation via JSON Schema
+```
+
+---
+
+## Complete example
+
+A deployment workflow that uses all four I/O levels:
+
+```yaml
+id: deploy
+name: Deployment Pipeline
+version: "1"
+
+# Workflow inputs — with schema
+inputs:
+  branch:
+    type: string
+    default: "main"
+  env:
+    type: string
+    required: true
+    description: "Target environment: staging or production"
+  maxRetries:
+    type: integer
+    default: 3
+    minimum: 1
+    maximum: 5
+
+participants:
+  build:
+    type: exec
+    run: ./build.sh
+    # Participant input — structured mapping
+    input:
+      branch: workflow.inputs.branch
+      env: workflow.inputs.env
+    # Participant output — with schema
+    output:
+      artifact:
+        type: string
+        required: true
+      version:
+        type: string
+
+  tests:
+    type: exec
+    run: npm test
+    input: build.output.artifact   # single string passthrough
+
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    input:
+      artifact: build.output.artifact
+      version: build.output.version
+      env: workflow.inputs.env
+    output:
+      url:
+        type: string
+      deployedAt:
+        type: string
+
+flow:
+  - build
+  - tests
+  - deploy:
+      when: tests.status == "success"
+
+# Workflow output — structured mapping with schema
+output:
+  schema:
+    url:
+      type: string
+      required: true
+    version:
+      type: string
+    env:
+      type: string
+  map:
+    url: deploy.output.url
+    version: build.output.version
+    env: workflow.inputs.env
+```
+
+---
+
+# Variables and expressions
+> CEL expressions and runtime variables available in duckflux workflows — conditions, input mappings, guards, and the full variable reference.
+
+
+All dynamic values in a duckflux workflow — conditions, guard clauses, input mappings, payload values — are written as **CEL expressions** (Common Expression Language). CEL is a simple, safe, and fast expression language developed by Google and used in production systems like Kubernetes, Firebase, and Envoy.
+
+---
+
+## Where expressions are used
+
+Expressions appear in any field that needs to reference runtime data:
+
+| Field | Example |
+|-------|---------|
+| `if` condition | `condition: tests.status == "success" && lint.status == "success"` |
+| `when` guard | `when: reviewer.output.approved == true` |
+| `loop` exit condition | `until: reviewer.output.approved == true` |
+| `input` mapping | `task: workflow.inputs.taskDescription` |
+| `http` url, headers, body | `url: '"https://api.example.com/users/" + workflow.inputs.userId'` |
+| `emit` payload | `payload: coder.output` |
+| `wait` match condition | `match: event.requestId == submitRequest.output.id` |
+| `set` values | `token: workflow.inputs.api_token` |
+| `cwd` path | `cwd: workflow.inputs.packagePath` |
+
+<Aside type="tip">
+  CEL expressions are always **strings** in YAML. When an expression contains special characters or YAML operators, wrap it in quotes.
+</Aside>
+
+---
+
+## Runtime variables
+
+The following variables are available in any expression within a workflow.
+
+### `workflow` — Workflow definition
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `workflow.id` | string | Workflow definition identifier. |
+| `workflow.name` | string | Human-readable name. |
+| `workflow.version` | string | Definition version. |
+| `workflow.inputs` | map | Input parameters as defined in the `inputs` field. |
+| `workflow.output` | string or map | Workflow output as defined in the `output` field. |
+
+```yaml
+flow:
+  - as: clone
+    type: exec
+    run: git clone
+    input:
+      repo: workflow.inputs.repoUrl
+      branch: workflow.inputs.branch
+```
+
+### `execution` — Current run metadata
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `execution.id` | string | Unique identifier for this execution. |
+| `execution.number` | int | Sequential execution number. |
+| `execution.startedAt` | timestamp | Execution start time. |
+| `execution.status` | string | Current status: `running`, `success`, `failure`. |
+| `execution.context` | map | Read/write shared data scratchpad. |
+| `execution.cwd` | string | Resolved base working directory. |
+
+`execution.context` is the only writable shared state in a workflow. Use the [`set` construct](/workflows/set/) to assign values, or read them in any CEL expression:
+
+```yaml
+flow:
+  - loop:
+      max: 5
+      steps:
+        - coder
+        - reviewer:
+            when: execution.context.lastScore < 8
+```
+
+### `input` and `output` — Participant scope
+
+Within a participant's context, `input` and `output` refer to **that participant's own** I/O — not the workflow's.
+
+| Variable | Description |
+|----------|-------------|
+| `input` | The resolved input received by the current participant (read-only). |
+| `output` | The output produced by the current participant (write-only, set by the runtime). |
+
+```yaml
+participants:
+  notify:
+    type: http
+    url: https://hooks.example.com/done
+    method: POST
+    body: input   # the chained input received by this participant
+```
+
+These are distinct from `workflow.inputs` (the workflow's declared input parameters) and `workflow.output` (the workflow's final result).
+
+### `env` — Environment variables
+
+Read-only. Injected by the runtime. Never defined in YAML.
+
+```yaml
+participants:
+  fetchData:
+    type: http
+    url: https://api.example.com/data
+    headers:
+      Authorization: '"Bearer " + env.API_KEY'
+```
+
+### `<step>` — Named participant result
+
+Every **named** participant (reusable or named inline) is accessible by its name after it executes:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `<step>.output` | string or map | Step output. Auto-parsed as JSON if valid. |
+| `<step>.status` | string | `success`, `failure`, or `skipped`. |
+| `<step>.startedAt` | timestamp | Step start time. |
+| `<step>.finishedAt` | timestamp | Step end time. |
+| `<step>.duration` | duration | Execution duration. |
+| `<step>.retries` | int | Number of execution attempts. |
+| `<step>.error` | string | Error message (when `status == "failure"`). |
+| `<step>.cwd` | string | Effective working directory (`exec` only). |
+
+```yaml
+flow:
+  - reviewer
+  - deploy:
+      when: reviewer.output.approved == true && reviewer.output.score >= 8
+  - if:
+      condition: deploy.status == "failure"
+      then:
+        - rollback
+```
+
+<Aside>
+  If a step's stdout is valid JSON, the runtime parses it automatically. Fields become accessible as `<step>.output.<field>` — no extra configuration needed.
+</Aside>
+
+### `loop` — Iteration context
+
+Available only inside `loop` blocks. Renamed via the `as` field on the loop.
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `loop.index` | int | 0-based iteration index. |
+| `loop.iteration` | int | 1-based iteration number. |
+| `loop.first` | bool | `true` on the first iteration. |
+| `loop.last` | bool | `true` on the last iteration (only when `max` is defined). |
+
+```yaml
+flow:
+  - loop:
+      as: round
+      max: 5
+      steps:
+        - coder
+        - reviewer:
+            when: round.index > 0   # skip reviewer on the first iteration
+```
+
+### `event` — Received event payload
+
+Available only inside `wait` blocks when waiting for an event. Contains the received event payload as a map.
+
+```yaml
+flow:
+  - submitRequest
+  - wait:
+      event: "approval.response"
+      match: event.requestId == submitRequest.output.id && event.approved == true
+      timeout: 24h
+```
+
+### `now` — Current timestamp
+
+Available anywhere. Returns the current timestamp at evaluation time.
+
+```yaml
+flow:
+  - wait:
+      until: now >= timestamp("2026-06-01T09:00:00Z")
+      poll: 1m
+      timeout: 48h
+```
+
+---
+
+## Variable summary
+
+```
+workflow.*              Workflow definition metadata
+workflow.inputs.*       Workflow input parameters
+workflow.output         Workflow final output
+execution.*             Current run metadata
+execution.context.*     Shared read/write scratchpad
+input                   Current participant's input (chain + explicit, merged)
+output                  Current participant's output (write-only)
+env.*                   Environment variables (read-only)
+<step>.*                Named participant result
+loop.*                  Loop iteration context (or renamed via 'as')
+event                   Event payload (inside wait blocks)
+now                     Current timestamp
+```
+
+---
+
+## CEL expression basics
+
+CEL supports standard comparison and logic operators, string and collection operations, and type conversions.
+
+### Comparisons and logic
+
+```cel
+reviewer.output.approved == true
+tests.status != "failure"
+reviewer.output.score >= 8 && lint.status == "success"
+deploy.status == "success" || deploy.status == "skipped"
+```
+
+### Strings
+
+```cel
+workflow.inputs.branch.startsWith("feat/")
+workflow.inputs.env == "production"
+"Bearer " + env.API_TOKEN
+coder.output.message.contains("error")
+```
+
+### Collections
+
+```cel
+reviewer.output.tags.size() > 0
+"admin" in reviewer.output.roles
+workflow.inputs.targets.filter(t, t.startsWith("prod"))
+```
+
+### Type conversions
+
+```cel
+int(reviewer.output.score)
+string(execution.number)
+timestamp(workflow.inputs.scheduledAt)
+```
+
+### Timestamps and durations
+
+```cel
+now >= timestamp("2026-06-01T09:00:00Z")
+execution.startedAt + duration("1h")
+deploy.finishedAt - deploy.startedAt
+```
+
+### Full standard library
+
+A conforming runtime supports the full CEL standard library:
+
+| Category | Functions |
+|----------|-----------|
+| Strings | `contains`, `startsWith`, `endsWith`, `matches` (RE2), `size`, `lowerAscii`, `upperAscii`, `replace`, `split`, `join` |
+| Lists and maps | `size`, `in`, `+` (concatenation), `[]` (index/key access) |
+| Macros | `has`, `all`, `exists`, `exists_one`, `filter`, `map` |
+| Type conversions | `int()`, `uint()`, `double()`, `string()`, `bool()`, `bytes()`, `timestamp()`, `duration()` |
+| Timestamps | Arithmetic, comparisons, component access |
+
+---
+
+## Common patterns
+
+### Check a step's status before proceeding
+
+```yaml
+- deploy:
+    when: build.status == "success"
+```
+
+### Access a JSON output field
+
+```yaml
+# If reviewer outputs: {"approved": true, "score": 9}
+- when: reviewer.output.approved == true && reviewer.output.score >= 7
+```
+
+### Use a workflow input in a URL
+
+```yaml
+participants:
+  fetchUser:
+    type: http
+    url: '"https://api.example.com/users/" + workflow.inputs.userId'
+    method: GET
+```
+
+### Use an environment variable in a header
+
+```yaml
+participants:
+  callApi:
+    type: http
+    url: https://api.example.com/data
+    headers:
+      Authorization: '"Bearer " + env.API_SECRET'
+```
+
+### Gate a step on iteration index inside a loop
+
+```yaml
+flow:
+  - loop:
+      as: attempt
+      max: 3
+      steps:
+        - coder
+        - reviewer:
+            when: attempt.index > 0
+```
+
+### Wait until a specific time
+
+```yaml
+flow:
+  - wait:
+      until: now >= timestamp("2026-06-01T09:00:00Z")
+      poll: 5m
+      timeout: 72h
+```
+
+---
+
+# Context assignment (set)
+> Write values to the shared execution context using the set construct — assign intermediate results, environment-derived values, or computed data for use in later steps.
+
+
+The `set` construct writes values into `execution.context`, a shared scratchpad that persists across the entire workflow run. Use it to assign intermediate values, derive configuration, or pass computed data between steps without piping through participants.
+
+---
+
+## The `set` construct
+
+A `set` block maps one or more keys to [CEL expressions](/workflows/variables-and-expressions/). Each evaluated result is stored as `execution.context.<key>`:
+
+```yaml
+flow:
+  - set:
+      token: workflow.inputs.api_token
+      region: "'us-east-1'"
+
+  - as: fetch
+    type: http
+    url: "'https://api.example.com/data'"
+    headers:
+      Authorization: "'Bearer ' + execution.context.token"
+      X-Region: execution.context.region
+```
+
+<Aside type="tip">
+  `set` is a **flow-level control operation**, like `if` or `wait`. It is not a participant — it has no `type`, produces no output, and does not affect the [implicit I/O chain](/workflows/inputs-outputs/#implicit-io-chain). The chain passes through it unchanged.
+</Aside>
+
+### Fields
+
+Each key inside the `set` block is a context variable name. The value is a CEL expression.
+
+```yaml
+- set:
+    <key>: <CEL expression>
+    <key>: <CEL expression>
+```
+
+| Aspect | Details |
+|--------|---------|
+| **Keys** | Any valid identifier, except [reserved names](/workflows/variables-and-expressions/#reserved-names) (`workflow`, `execution`, `input`, `output`, `env`, `loop`, `event`). |
+| **Values** | CEL expressions evaluated at runtime against the current state. |
+| **Multiple keys** | Yes — assign as many as needed in a single `set` block. |
+| **Overwrite** | If a key already exists in `execution.context`, it is overwritten. |
+
+---
+
+## Basic usage
+
+Assign a literal string and a computed value:
+
+```yaml
+flow:
+  - set:
+      env_name: "'production'"
+      start_ts: "now"
+
+  - as: deploy
+    type: exec
+    run: ./deploy.sh
+    input:
+      environment: execution.context.env_name
+```
+
+---
+
+## Using workflow inputs
+
+Store values derived from workflow inputs for later reuse:
+
+```yaml
+inputs:
+  notion_token:
+    type: string
+  repo_url:
+    type: string
+    format: uri
+
+flow:
+  - set:
+      token: workflow.inputs.notion_token
+      repo: workflow.inputs.repo_url
+
+  - as: fetch_pages
+    type: http
+    url: "'https://api.notion.com/v1/pages'"
+    headers:
+      Authorization: "'Bearer ' + execution.context.token"
+```
+
+---
+
+## Conditional assignment
+
+Combine `set` with `if` to assign values based on conditions:
+
+```yaml
+flow:
+  - if:
+      condition: has(workflow.inputs.custom_token)
+      then:
+        - set:
+            api_token: workflow.inputs.custom_token
+      else:
+        - set:
+            api_token: env.DEFAULT_API_TOKEN
+
+  - as: call_api
+    type: http
+    url: "'https://api.example.com/action'"
+    headers:
+      Authorization: "'Bearer ' + execution.context.api_token"
+```
+
+---
+
+## Accumulating state across loop iterations
+
+`set` is useful for building up state across loop iterations — for example, tracking a score that determines when to exit:
+
+```yaml
+flow:
+  - set:
+      best_score: "0"
+
+  - loop:
+      until: execution.context.best_score >= 8
+      max: 5
+      steps:
+        - reviewer
+        - set:
+            best_score: reviewer.output.score
+
+  - as: report
+    type: exec
+    run: echo "Final score"
+    input: execution.context.best_score
+```
+
+<Aside type="caution">
+  Step outputs inside a loop are **overwritten on each iteration**. If you need to preserve a value across iterations, use `set` to write it to `execution.context`.
+</Aside>
+
+---
+
+## Chain passthrough
+
+`set` is transparent to the [implicit I/O chain](/workflows/inputs-outputs/#implicit-io-chain). The output of the step before `set` is passed unchanged to the step after it:
+
+```yaml
+flow:
+  - as: fetch
+    type: exec
+    run: curl -s https://api.example.com/data
+
+  - set:
+      fetched_at: "now"
+
+  - as: process
+    type: exec
+    run: ./process.sh    # receives fetch's output via chain, not set's
+```
+
+---
+
+## Complete example
+
+```yaml
+id: context-pipeline
+name: Context Assignment Pipeline
+version: "1"
+
+inputs:
+  api_token:
+    type: string
+    required: true
+  environment:
+    type: string
+    default: "staging"
+
+flow:
+  # Initialize context from inputs and environment
+  - set:
+      token: workflow.inputs.api_token
+      env: workflow.inputs.environment
+      run_id: execution.id
+
+  # Conditional endpoint selection
+  - if:
+      condition: execution.context.env == "production"
+      then:
+        - set:
+            base_url: "'https://api.example.com'"
+      else:
+        - set:
+            base_url: "'https://staging-api.example.com'"
+
+  # Use context values in subsequent steps
+  - as: health_check
+    type: http
+    url: execution.context.base_url + "'/health'"
+    method: GET
+    headers:
+      Authorization: "'Bearer ' + execution.context.token"
+    timeout: 10s
+
+  # Store result for later use
+  - set:
+      api_healthy: health_check.status == "success"
+
+  - if:
+      condition: execution.context.api_healthy
+      then:
+        - as: deploy
+          type: exec
+          run: ./deploy.sh
+          timeout: 5m
+
+output:
+  environment: execution.context.env
+  api_healthy: execution.context.api_healthy
+  run_id: execution.context.run_id
+```
+
+---
+
+# Loops
+> Repeat steps conditionally or a fixed number of times using the loop construct.
+
+
+duckflux provides a first-class `loop` construct for repeating steps — either until a [CEL](/workflows/variables-and-expressions/) condition becomes true, or a fixed number of times. Both modes can be combined for safety caps.
+
+---
+
+## The `loop` construct
+
+A `loop` block wraps a sequence of steps in the `flow` and controls how many times they repeat:
+
+```yaml
+flow:
+  - loop:
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - coder
+        - reviewer
+```
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `steps` | list | Yes | Steps to repeat on each iteration. |
+| `until` | CEL expression | One of `until` or `max` | Exit condition. Loop stops when this evaluates to `true`. |
+| `max` | integer | One of `until` or `max` | Maximum number of iterations. Loop stops after exactly N runs. |
+| `as` | string | No | Renames the loop context variable (default: `loop`). |
+
+<Aside type="caution">
+  At least one of `until` or `max` must be present. A loop with neither is rejected at parse time.
+</Aside>
+
+---
+
+## Conditional loop — `until`
+
+Repeats a set of steps until a CEL condition evaluates to `true`:
+
+```yaml
+flow:
+  - loop:
+      until: reviewer.output.approved == true
+      steps:
+        - coder
+        - reviewer
+```
+
+The condition is evaluated **after** each iteration. If it is `true` on the first check, the loop exits immediately and does not run again.
+
+<Aside type="caution">
+  A loop with only `until` and no `max` runs indefinitely until the condition is met. Always pair `until` with a `max` safety cap in production workflows.
+</Aside>
+
+---
+
+## Fixed loop — `max`
+
+Runs a set of steps exactly N times, with no exit condition:
+
+```yaml
+flow:
+  - loop:
+      max: 3
+      steps:
+        - stepA
+```
+
+This is equivalent to writing `stepA` three times in the flow, but more concise and without the repetition.
+
+---
+
+## Combining `until` and `max`
+
+Use both fields together to exit early when a condition is met, while still capping the total number of iterations as a safety measure:
+
+```yaml
+flow:
+  - loop:
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - coder
+        - reviewer
+```
+
+The loop exits as soon as either condition is satisfied — whichever comes first:
+- `reviewer.output.approved` becomes `true`, or
+- 5 iterations are completed.
+
+This is the recommended pattern for agentic review cycles, retry loops, and polling workflows.
+
+---
+
+## Loop context variables
+
+Inside a `loop` block, the following variables are available under the `loop` namespace:
+
+| Variable | Type | Description |
+|----------|------|-------------|
+| `loop.index` | int | 0-based iteration index. `0` on the first iteration. |
+| `loop.iteration` | int | 1-based iteration number. `1` on the first iteration. |
+| `loop.first` | bool | `true` only on the first iteration. |
+| `loop.last` | bool | `true` on the last iteration. Only set when `max` is defined. |
+
+Use these in [CEL expressions](/workflows/variables-and-expressions/) within the loop's `steps`:
+
+```yaml
+flow:
+  - loop:
+      max: 5
+      steps:
+        - coder
+        - reviewer:
+            when: loop.index > 0
+```
+
+Here, `reviewer` is skipped on the first iteration (`loop.index == 0`) and runs on all subsequent ones.
+
+<Aside>
+  Step outputs inside a loop are **overwritten on each iteration** — they always reflect the most recent execution. If you need to preserve results across iterations, use [`set`](/workflows/set/) to write values to `execution.context` as a scratchpad (see [Variables and Expressions](/workflows/variables-and-expressions/)).
+</Aside>
+
+---
+
+## Renaming the context with `as`
+
+By default the loop context is accessed via `loop.*`. Use the `as` field to give the context a semantic name — especially useful when loops are nested or the variable name should reflect the domain:
+
+```yaml
+flow:
+  - loop:
+      as: attempt
+      max: 3
+      steps:
+        - coder
+        - reviewer:
+            when: attempt.index > 0
+```
+
+With `as: attempt`, the variables become `attempt.index`, `attempt.iteration`, `attempt.first`, and `attempt.last` instead of the default `loop.*`.
+
+<Tabs>
+  <TabItem label="Default (loop.*)">
+    ```yaml
+    flow:
+      - loop:
+          max: 3
+          steps:
+            - coder
+            - reviewer:
+                when: loop.index > 0
+    ```
+  </TabItem>
+  <TabItem label="Renamed (as: attempt)">
+    ```yaml
+    flow:
+      - loop:
+          as: attempt
+          max: 3
+          steps:
+            - coder
+            - reviewer:
+                when: attempt.index > 0
+    ```
+  </TabItem>
+</Tabs>
+
+Both are functionally identical. The `as` field is purely for readability.
+
+<Aside type="tip">
+  Choose a name that reflects the semantic meaning of the iteration — `attempt`, `round`, `cycle`, `retry` — rather than a generic `loop`. It makes the workflow easier to read and reason about.
+</Aside>
+
+---
+
+## Using `when` inside loops
+
+The [`when` guard condition](/workflows/conditionals/) works inside loops to control which steps execute on each iteration:
+
+```yaml
+flow:
+  - loop:
+      as: round
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - reviewer
+        - coder:
+            when: reviewer.output.approved == false
+```
+
+In this example:
+- `reviewer` runs on every iteration.
+- `coder` only runs when `reviewer.output.approved` is `false` — it is skipped on the iteration where approval is granted.
+
+This pattern avoids doing unnecessary work on the final iteration of a conditional loop.
+
+---
+
+## Complete example
+
+A code review pipeline that combines `until`, `max`, `as`, and `when` to drive an agentic review cycle:
+
+```yaml
+id: code-review-loop
+name: Code Review Loop
+version: "1"
+
+defaults:
+  timeout: 10m
+
+inputs:
+  branch:
+    type: string
+    default: "main"
+  max_rounds:
+    type: integer
+    default: 5
+    description: Safety cap for review iterations.
+
+participants:
+  coder:
+    type: exec
+    run: echo '{"status":"coded","diff":"..."}'
+    onError: retry
+    retry:
+      max: 2
+      backoff: 2s
+
+  reviewer:
+    type: exec
+    run: echo '{"approved":true,"score":9,"feedback":""}'
+
+  notifyApproved:
+    type: http
+    url: https://hooks.example.com/approved
+    method: POST
+    onError: skip
+
+  notifyRejected:
+    type: http
+    url: https://hooks.example.com/rejected
+    method: POST
+    onError: skip
+
+flow:
+  - coder
+
+  - loop:
+      as: round
+      until: reviewer.output.approved == true
+      max: workflow.inputs.max_rounds
+      steps:
+        - reviewer
+        - coder:
+            when: reviewer.output.approved == false
+
+  - if:
+      condition: reviewer.output.approved == true
+      then:
+        - notifyApproved
+      else:
+        - notifyRejected
+
+output:
+  approved: reviewer.output.approved
+  score: reviewer.output.score
+  rounds: round.iteration
+```
+
+Walk-through:
+1. `coder` runs once before the loop to produce an initial draft.
+2. The loop runs up to `workflow.inputs.max_rounds` times — or exits early once `reviewer.output.approved` is `true`.
+3. On each iteration, `reviewer` always runs; `coder` only runs if the reviewer rejected the output.
+4. After the loop, the `if` block sends the appropriate notification.
+5. The workflow outputs the final approval status, score, and total number of rounds completed.
+
+---
+
+# Conditionals
+> Conditional flow control in workflows with if/then/else and guard conditions with when.
+
+
+duckflux provides two mechanisms for conditional flow control: the `if/then/else` block for multi-step branching, and the `when` field as a guard condition on individual steps.
+
+---
+
+## `if/then/else` — Conditional branching
+
+The `if` block evaluates a [CEL](/workflows/variables-and-expressions/) expression and routes execution to one of two branches:
+
+```yaml
+flow:
+  - stepA
+  - if:
+      condition: stepA.output.score > 7
+      then:
+        - stepB
+        - stepC
+      else:
+        - stepD
+```
+
+The `else` branch is optional. If omitted and the condition is false, execution continues to the next step after the `if` block.
+
+```yaml
+flow:
+  - analyze
+  - if:
+      condition: analyze.output.hasIssues == true
+      then:
+        - fix
+        - reanalyze
+  - deploy
+```
+
+In the example above, if `analyze.output.hasIssues` is `false`, execution jumps directly to `deploy`.
+
+### Branches with multiple steps
+
+Each branch (`then` and `else`) accepts a sequence of steps, including nested control flow constructs:
+
+```yaml
+flow:
+  - runTests
+  - if:
+      condition: runTests.output.passed == true
+      then:
+        - buildArtifact
+        - if:
+            condition: workflow.inputs.env == "production"
+            then:
+              - deployProd
+            else:
+              - deployStaging
+        - notifySuccess
+      else:
+        - notifyFailure
+        - openIssue
+```
+
+<Aside type="tip">
+  Nested conditionals are supported, but use them sparingly. Deeply nested flows tend to be hard to read — consider extracting complex branches into [sub-workflows](/workflows/nested-workflows/).
+</Aside>
+
+---
+
+## `when` — Guard condition
+
+The `when` field on a flow step is a CEL precondition that determines whether that step should execute. If the expression evaluates to `false`, the step is marked as `skipped` and execution continues.
+
+```yaml
+flow:
+  - coder
+  - reviewer
+  - deploy:
+      when: reviewer.output.approved == true
+  - notify:
+      when: reviewer.output.approved == false
+```
+
+`when` can be used on any participant reference in the flow:
+
+```yaml
+flow:
+  - fetchData
+  - processData:
+      when: fetchData.output.records.size() > 0
+  - generateReport
+```
+
+### `when` inside loops
+
+Guard conditions are especially useful inside loops to control which steps execute on each iteration:
+
+```yaml
+flow:
+  - loop:
+      as: attempt
+      max: 3
+      steps:
+        - coder
+        - reviewer:
+            when: attempt.index > 0
+```
+
+In this example, `reviewer` is skipped on the first iteration (`attempt.index == 0`) and runs on all subsequent ones.
+
+---
+
+## `when` vs `if` — When to use each
+
+| | `when` | `if/then/else` |
+|---|---|---|
+| Scope | A single step | One or more steps per branch |
+| `else` | No | Yes |
+| Readability | High for simple guards | Better for explicit branching |
+| Typical use | Skip or run a single step | Route execution to distinct paths |
+
+**Use `when`** when you simply want to skip or run a step based on a condition:
+
+```yaml
+- deploy:
+    when: reviewer.output.approved == true
+```
+
+**Use `if/then/else`** when the branch involves multiple steps or explicit alternative paths:
+
+```yaml
+- if:
+    condition: reviewer.output.approved == true
+    then:
+      - deploy
+      - notifySuccess
+    else:
+      - rollback
+      - notifyFailure
+```
+
+<Aside>
+  Both accept any valid CEL expression. Access outputs from previous steps via `<participant>.output.<field>`, workflow inputs via `workflow.inputs.<field>`, and execution variables via `execution.*`. See [Variables and Expressions](/workflows/variables-and-expressions/) for the full reference.
+</Aside>
+
+---
+
+## Complete example
+
+A code review pipeline combining `if/then/else`, `when`, and a conditional loop:
+
+```yaml
+id: code-review
+name: Code Review Pipeline
+version: "1"
+
+defaults:
+  timeout: 5m
+
+inputs:
+  branch:
+    type: string
+    default: "main"
+  max_rounds:
+    type: integer
+    default: 3
+
+participants:
+  coder:
+    type: exec
+    run: echo '{"status":"coded"}'
+    onError: retry
+    retry:
+      max: 2
+      backoff: 1s
+
+  reviewer:
+    type: exec
+    run: echo '{"approved":true,"score":8}'
+
+  tests:
+    type: exec
+    run: npm test
+    onError: skip
+
+  lint:
+    type: exec
+    run: npm run lint
+    onError: skip
+
+  notifySuccess:
+    type: http
+    url: https://hooks.example.com/success
+    method: POST
+    onError: skip
+
+  notifyFailure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+
+flow:
+  - coder
+
+  - loop:
+      until: reviewer.output.approved == true
+      max: 3
+      steps:
+        - reviewer
+        - coder:
+            when: reviewer.output.approved == false
+
+  - parallel:
+      - tests
+      - lint
+
+  - if:
+      condition: tests.status == "success" && lint.status == "success"
+      then:
+        - notifySuccess
+      else:
+        - notifyFailure
+
+output:
+  approved: reviewer.output.approved
+  score: reviewer.output.score
+```
+
+---
+
+# Parallel Execution
+> Run multiple steps concurrently with the parallel construct, and understand how outputs are aggregated after all branches complete.
+
+
+The `parallel` construct runs multiple steps at the same time. The flow continues only after **all** parallel branches have finished — whether they succeeded, failed, or were skipped.
+
+---
+
+## Basic usage
+
+Wrap a list of participant references in a `parallel` block:
+
+```yaml
+flow:
+  - parallel:
+      - lint
+      - test
+      - build
+  - report
+```
+
+`lint`, `test`, and `build` start simultaneously. `report` only runs after all three complete.
+
+---
+
+## Inline participants in parallel
+
+Each branch in a `parallel` block follows the same syntax as any other flow step. You can define participants inline — named or anonymous — directly inside the block:
+
+```yaml
+flow:
+  - parallel:
+      - as: lint
+        type: exec
+        run: npm run lint
+        timeout: 30s
+
+      - as: test
+        type: exec
+        run: npm test
+        timeout: 2m
+
+      - as: typecheck
+        type: exec
+        run: npm run typecheck
+        timeout: 30s
+
+  - report
+```
+
+<Aside type="tip">
+  Use inline participants for steps that only appear inside the `parallel` block and are not reused elsewhere. For steps shared across multiple parts of the flow, define them in the `participants` block.
+</Aside>
+
+---
+
+## Accessing outputs after parallel
+
+### Named step outputs
+
+After a `parallel` block completes, every **named** branch output is accessible by name — exactly like any sequential step:
+
+```yaml
+flow:
+  - parallel:
+      - tests
+      - lint
+
+  - if:
+      condition: tests.status == "success" && lint.status == "success"
+      then:
+        - deploy
+      else:
+        - notifyFailure
+```
+
+Each parallel branch writes to its own namespace. `tests.output`, `lint.output`, `tests.status`, and `lint.status` are all available downstream.
+
+### The I/O chain output
+
+The implicit I/O chain (the output automatically passed to the next sequential step) after a `parallel` block is an **array** containing the outputs of all branches in declaration order:
+
+```yaml
+flow:
+  - parallel:
+      - stepA   # index 0 in the output array
+      - stepB   # index 1 in the output array
+      - stepC   # index 2 in the output array
+
+  - as: aggregator
+    type: exec
+    run: ./aggregate.sh   # receives [ stepA.output, stepB.output, stepC.output ] as input
+```
+
+### Anonymous participants in parallel
+
+Anonymous branches (without `as`) are included **positionally** in the chain output array, but cannot be referenced by name in subsequent CEL expressions:
+
+```yaml
+flow:
+  - parallel:
+      - as: namedBranch
+        type: exec
+        run: echo "named"
+
+      - type: exec            # anonymous — output accessible only via the array
+        run: echo "anonymous"
+
+  - as: next
+    type: exec
+    run: ./process.sh   # input[0] is namedBranch output, input[1] is the anonymous output
+```
+
+<Aside>
+  Anonymous branch outputs are only useful as part of the aggregated parallel result passed via the I/O chain. If you need to reference a branch's output by name in a downstream step, always give it an `as` identifier.
+</Aside>
+
+---
+
+## Error handling in parallel steps
+
+Each branch has independent error handling. Configure `onError` per participant:
+
+```yaml
+participants:
+  lint:
+    type: exec
+    run: npm run lint
+    onError: skip
+
+  test:
+    type: exec
+    run: npm test
+    onError: fail
+
+  audit:
+    type: exec
+    run: npm audit
+    onError: skip
+
+flow:
+  - parallel:
+      - lint
+      - test
+      - audit
+```
+
+- If `test` fails → the workflow stops immediately (`onError: fail`).
+- If `lint` or `audit` fail → those branches are marked `skipped` and the others continue running.
+
+<Aside>
+  The `parallel` block waits for all branches to settle before moving on. Failure propagates after all branches have completed or been terminated.
+</Aside>
+
+You can also override `onError` at the flow level for a specific invocation:
+
+```yaml
+flow:
+  - parallel:
+      - lint:
+          onError: skip   # overrides the participant-level setting for this invocation
+      - test
+      - audit
+```
+
+---
+
+## Sub-workflows in parallel
+
+`parallel` branches can call [sub-workflows](/workflows/nested-workflows/), enabling large concurrent workloads to be encapsulated in separate files:
+
+```yaml
+flow:
+  - parallel:
+      - as: lintCheck
+        type: workflow
+        path: ./lint.flux.yaml
+
+      - as: securityScan
+        type: workflow
+        path: ./security.flux.yaml
+
+      - as: buildArtifact
+        type: workflow
+        path: ./build.flux.yaml
+
+  - deploy:
+      when: lintCheck.output.passed == true && securityScan.output.clean == true
+```
+
+Each sub-workflow runs in its own isolated `execution.context` and returns its output when complete.
+
+---
+
+## Parallel inside other constructs
+
+`parallel` can appear inside loops, conditionals, and other flow constructs.
+
+### Inside a loop
+
+```yaml
+flow:
+  - loop:
+      max: 3
+      steps:
+        - parallel:
+            - fetchA
+            - fetchB
+        - merge
+```
+
+On each iteration, `fetchA` and `fetchB` run concurrently, then `merge` runs after both complete.
+
+### Inside a conditional branch
+
+```yaml
+flow:
+  - runTests
+  - if:
+      condition: runTests.output.passed == true
+      then:
+        - parallel:
+            - buildFrontend
+            - buildBackend
+        - deploy
+      else:
+        - notifyFailure
+```
+
+---
+
+## Complete example
+
+A CI pipeline that runs quality checks in parallel, then deploys only if all checks pass:
+
+```yaml
+id: ci-pipeline
+name: CI Pipeline
+version: "1"
+
+defaults:
+  timeout: 10m
+
+inputs:
+  branch:
+    type: string
+    default: "main"
+
+participants:
+  lint:
+    type: exec
+    run: npm run lint
+    timeout: 2m
+    onError: skip
+
+  test:
+    type: exec
+    run: npm test
+    timeout: 5m
+    onError: fail
+
+  typecheck:
+    type: exec
+    run: npm run typecheck
+    timeout: 2m
+    onError: skip
+
+  audit:
+    type: exec
+    run: npm audit --audit-level=high
+    timeout: 1m
+    onError: skip
+
+  build:
+    type: exec
+    run: npm run build
+    timeout: 5m
+    onError: fail
+
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    timeout: 10m
+    onError: fail
+
+  notifySuccess:
+    type: http
+    url: https://hooks.example.com/success
+    method: POST
+    onError: skip
+
+  notifyFailure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+
+flow:
+  - parallel:
+      - lint
+      - test
+      - typecheck
+      - audit
+
+  - build:
+      when: test.status == "success"
+
+  - deploy:
+      when: build.status == "success"
+
+  - if:
+      condition: deploy.status == "success"
+      then:
+        - notifySuccess
+      else:
+        - notifyFailure
+
+output:
+  lintStatus: lint.status
+  testStatus: test.status
+  buildStatus: build.status
+  deployStatus: deploy.status
+```
+
+Walk-through:
+1. All four quality checks run concurrently. `test` will stop the workflow if it fails; the others skip on failure.
+2. `build` runs only if `test` passed.
+3. `deploy` runs only if `build` succeeded.
+4. The final `if` sends the appropriate notification.
+
+---
+
+# Events
+> Emit events and wait for them — event-driven communication within and across duckflux workflows.
+
+
+duckflux supports event-driven communication through two complementary primitives: **`emit`** (publish) and **`wait`** (subscribe). Together they allow steps to communicate asynchronously — within the same workflow, across parallel branches, or between parent and sub-workflows.
+
+---
+
+## Emitting events
+
+The `emit` participant type publishes a named event to the workflow's event hub.
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `event` | string | Yes | Event name to publish. Dot-notation is supported (e.g. `order.created`). |
+| `payload` | string or object | No | Event payload. A single CEL expression or a map of CEL expression values. |
+| `ack` | boolean | No | If `true`, blocks until delivery is confirmed. Default: `false`. |
+| `onTimeout` | string | No | Behavior when the ack deadline expires: `fail` (default) or `skip`. Only applies when `ack: true`. |
+
+### Fire-and-forget (default)
+
+The simplest mode. The event is dispatched and execution continues immediately:
+
+```yaml
+participants:
+  notifyBuild:
+    type: emit
+    event: "build.completed"
+    payload:
+      branch: workflow.inputs.branch
+      status: build.output.status
+```
+
+### Acknowledged delivery
+
+With `ack: true`, the step blocks until the event hub confirms the message was persisted. Combine with `timeout` to limit how long to wait:
+
+```yaml
+participants:
+  notifyCritical:
+    type: emit
+    event: "deploy.started"
+    payload: deploy.output
+    ack: true
+    timeout: 10s
+    onTimeout: skip
+```
+
+When the ack times out:
+- `onTimeout: fail` (default) — the step fails and follows the configured `onError` strategy.
+- `onTimeout: skip` — the step succeeds with `ack: false` in its output.
+
+### Payload formats
+
+A single CEL expression passes the value directly:
+
+```yaml
+payload: coder.output
+```
+
+A structured object maps individual fields:
+
+```yaml
+payload:
+  taskId: workflow.inputs.taskId
+  status: coder.output.status
+  startedAt: execution.startedAt
+```
+
+### Emit output
+
+The `emit` participant produces a result map with three fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | The event name that was published. |
+| `payload` | any | The resolved payload that was sent. |
+| `ack` | boolean | `true` if acknowledged delivery succeeded, `false` if it timed out with `onTimeout: skip`. |
+
+```yaml
+flow:
+  - notifyCritical
+  - if:
+      condition: notifyCritical.output.ack == false
+      then:
+        - fallbackNotify
+```
+
+---
+
+## Waiting for events
+
+The `wait` construct pauses execution until an event arrives on the hub. It is defined directly in the `flow` — not as a participant.
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `event` | string | Yes | Event name to listen for. |
+| `match` | CEL expression | No | Filter expression evaluated against the event payload. Only matching events unblock the wait. |
+| `timeout` | duration | No | Maximum time to wait before invoking `onTimeout`. |
+| `onTimeout` | string | No | Behavior on timeout: `fail` (default), `skip`, or a participant name to redirect to. |
+
+```yaml
+flow:
+  - wait:
+      event: "order.created"
+      match: event.orderId == workflow.inputs.expectedOrderId
+      timeout: 30s
+      onTimeout: fail
+```
+
+### The `event` variable
+
+Inside a `wait` block, the received event payload is accessible as the `event` variable. After the wait completes, `event` remains available in subsequent CEL expressions and becomes the chain value for the next step.
+
+```yaml
+flow:
+  - wait:
+      event: "approval.response"
+      match: event.requestId == submitRequest.output.id
+      timeout: 24h
+
+  # event payload is now the chain input for the next step
+  - as: handleApproval
+    type: exec
+    run: ./process-approval.sh
+```
+
+<Aside type="tip">
+  The `event` variable is only available inside `wait` blocks and in the immediate chain output. For long-lived access, capture the value in an explicit `input` mapping on the next step.
+</Aside>
+
+---
+
+## Wait modes
+
+The `wait` construct supports three distinct modes depending on which fields are present.
+
+### Wait for event
+
+Subscribes to the event hub and blocks until a matching event arrives:
+
+```yaml
+- wait:
+    event: "payment.processed"
+    match: event.transactionId == order.output.txId
+    timeout: 5m
+    onTimeout: fail
+```
+
+### Wait for duration (sleep)
+
+When only `timeout` is present, the step acts as a simple sleep:
+
+```yaml
+- wait:
+    timeout: 30s
+```
+
+### Wait for condition (polling)
+
+Periodically evaluates a CEL expression until it returns `true`:
+
+```yaml
+- wait:
+    until: now >= timestamp("2026-06-01T09:00:00Z")
+    poll: 1m
+    timeout: 48h
+    onTimeout: fail
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `until` | CEL expression | Condition to evaluate. Wait ends when this returns `true`. |
+| `poll` | duration | Interval between evaluations. |
+| `timeout` | duration | Maximum total wait time. |
+
+<Aside>
+  In polling mode, the `until` expression is evaluated once immediately, then re-evaluated at each `poll` interval. The `now` variable is refreshed on every evaluation.
+</Aside>
+
+---
+
+## Emit + wait pattern
+
+The most common event pattern: one step emits an event and a later step (or a parallel branch) waits for it.
+
+```yaml
+participants:
+  placeOrder:
+    type: emit
+    event: "order.created"
+    payload:
+      orderId: "ORD-001"
+      total: 99.95
+
+flow:
+  - placeOrder
+
+  - wait:
+      event: "order.created"
+      match: event.orderId == "ORD-001"
+      timeout: 5s
+      onTimeout: fail
+
+  - as: confirm
+    type: exec
+    run: echo "Order received"
+```
+
+<Aside>
+  Events emitted via `emit` are propagated **internally** within the same workflow. A `wait` step can react to events published by earlier steps in the same execution — no external infrastructure is needed for in-process communication.
+</Aside>
+
+### Acknowledged emit pattern
+
+When delivery confirmation matters, use `ack: true` on the emit side:
+
+```yaml
+participants:
+  publisher:
+    type: emit
+    event: "payment.processed"
+    ack: true
+    timeout: 5s
+    onTimeout: fail
+    payload:
+      transactionId: "TXN-42"
+      status: "approved"
+
+flow:
+  # Start a wait before emitting — the hub replays past events
+  - wait:
+      event: "payment.processed"
+      timeout: 5s
+      onTimeout: skip
+
+  - publisher
+
+output: publisher.output.ack
+```
+
+---
+
+## Events across workflows
+
+Events are shared between parent and sub-workflows. The event hub instance is passed down to all `type: workflow` participants, so events emitted in a parent are visible to sub-workflows and vice versa.
+
+```yaml
+# parent.flux.yaml
+participants:
+  trigger:
+    type: emit
+    event: "job.started"
+    payload:
+      jobId: "42"
+
+  child:
+    type: workflow
+    path: ./child.flux.yaml
+
+flow:
+  - trigger     # publishes job.started
+  - child       # child can wait for job.started
+```
+
+```yaml
+# child.flux.yaml
+flow:
+  - wait:
+      event: "job.started"
+      match: event.jobId == "42"
+      timeout: 10s
+
+  - as: process
+    type: exec
+    run: echo "Processing job"
+```
+
+<Aside type="caution">
+  To **isolate** a sub-workflow's events from the parent, run it as a separate `duckflux run` process instead of a `type: workflow` participant.
+</Aside>
+
+---
+
+## Events in parallel branches
+
+Events work across parallel branches within the same workflow. One branch can emit an event that another branch is waiting for:
+
+```yaml
+flow:
+  - parallel:
+      - as: producer
+        type: emit
+        event: "data.ready"
+        payload:
+          source: "branch-a"
+
+      - type: exec
+        run: echo "independent work"
+
+  - wait:
+      event: "data.ready"
+      timeout: 5s
+```
+
+---
+
+## Timeout behavior
+
+The `onTimeout` field on a `wait` step controls what happens when the deadline expires:
+
+| Value | Behavior |
+|-------|----------|
+| `fail` | The step fails. The workflow's `onError` strategy applies. This is the default. |
+| `skip` | The step is marked as `skipped` and execution continues. |
+| `<participant>` | Execution is redirected to the named participant as a fallback. |
+
+```yaml
+- wait:
+    event: "approval.response"
+    timeout: 24h
+    onTimeout: sendReminder
+```
+
+---
+
+## Complete example
+
+A workflow that publishes an order event, waits for payment confirmation, and then proceeds with fulfillment:
+
+```yaml
+id: order-pipeline
+name: Order Pipeline
+version: "1"
+
+inputs:
+  orderId:
+    type: string
+    required: true
+  total:
+    type: number
+    required: true
+
+participants:
+  publishOrder:
+    type: emit
+    event: "order.created"
+    payload:
+      orderId: workflow.inputs.orderId
+      total: workflow.inputs.total
+
+  fulfill:
+    type: exec
+    run: ./fulfill.sh
+    input:
+      orderId: workflow.inputs.orderId
+      paymentId: event.paymentId
+
+  notifyTimeout:
+    type: http
+    url: https://hooks.example.com/timeout
+    method: POST
+    onError: skip
+
+flow:
+  - publishOrder
+
+  - wait:
+      event: "payment.confirmed"
+      match: event.orderId == workflow.inputs.orderId
+      timeout: 30m
+      onTimeout: notifyTimeout
+
+  - fulfill
+
+output:
+  orderId: workflow.inputs.orderId
+  paymentId: event.paymentId
+  fulfillStatus: fulfill.status
+```
+
+---
+
+# Error Handling
+> Configure how workflows respond to failures — stop, skip, retry, or redirect to a fallback participant.
+
+
+duckflux provides fine-grained control over what happens when a step fails. Error handling is configured through the `onError` field and can be set at two levels: on the **participant** (default behavior) and in the **flow** (per-invocation override). The flow always wins.
+
+---
+
+## `onError` — Error strategies
+
+The `onError` field accepts one of four values:
+
+| Value | Behavior |
+|-------|----------|
+| `fail` | Stops the workflow immediately. **This is the global default.** |
+| `skip` | Marks the step as `skipped` and continues the flow. |
+| `retry` | Re-executes the step according to the `retry` configuration. |
+| `<participant>` | Redirects execution to another participant as a fallback. |
+
+---
+
+## Participant-level configuration
+
+Set `onError` on a participant to define its default error behavior wherever it is used in the flow:
+
+```yaml
+participants:
+  build:
+    type: exec
+    run: npm run build
+    onError: retry
+    retry:
+      max: 3
+      backoff: 2s
+
+  tests:
+    type: exec
+    run: npm test
+    onError: skip
+
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    onError: fail
+```
+
+In this example:
+- `build` retries up to 3 times with a 2-second wait between attempts.
+- `tests` is marked as skipped on failure and the workflow continues.
+- `deploy` stops the whole workflow if it fails.
+
+---
+
+## Flow-level override
+
+Any `onError` (or `retry`) defined on a participant can be overridden at the point of invocation in the `flow`. The flow-level value always takes precedence:
+
+```yaml
+participants:
+  coder:
+    type: exec
+    run: ./generate.sh
+    onError: retry
+    retry:
+      max: 3
+      backoff: 2s
+
+flow:
+  - coder:
+      onError: skip   # overrides the participant-level retry
+  - reviewer
+```
+
+Here `coder` will skip on error in this invocation, ignoring the `retry` defined on the participant.
+
+<Aside type="tip">
+  Use participant-level `onError` as the sensible default for a step, and flow-level overrides when a specific context requires different behavior — for example, retrying in production but skipping in a dry-run workflow.
+</Aside>
+
+---
+
+## `skip` — Continue on failure
+
+When `onError: skip`, the step is marked with `status: skipped` and the workflow moves to the next step. Subsequent steps can read `<step>.status` to react accordingly:
+
+```yaml
+participants:
+  notify:
+    type: http
+    url: https://hooks.example.com/notify
+    method: POST
+    onError: skip
+
+flow:
+  - build
+  - notify
+  - deploy:
+      when: notify.status == "success"
+```
+
+<Aside>
+  A skipped step's output is empty. Accessing `<step>.output.*` after a skip returns a zero value. Use `<step>.status` to distinguish skipped steps from successful ones.
+</Aside>
+
+---
+
+## `retry` — Re-execute with backoff
+
+When `onError: retry`, the runner re-executes the step according to the `retry` configuration:
+
+```yaml
+participants:
+  fetchData:
+    type: http
+    url: https://api.example.com/data
+    method: GET
+    onError: retry
+    retry:
+      max: 3        # maximum number of attempts (required)
+      backoff: 2s   # wait between attempts (default: 0s)
+      factor: 2     # backoff multiplier (default: 1)
+```
+
+### Retry fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max` | integer | — | Maximum number of attempts. Required when `onError: retry`. |
+| `backoff` | duration | `0s` | Initial wait interval between attempts. |
+| `factor` | number | `1` | Multiplier applied to `backoff` on each attempt. |
+
+### Exponential backoff
+
+With `backoff: 2s` and `factor: 2`, the wait intervals grow exponentially:
+
+| Attempt | Wait before retry |
+|---------|------------------|
+| 1st retry | 2s |
+| 2nd retry | 4s |
+| 3rd retry | 8s |
+
+If all attempts fail, the step is treated as a final failure and the workflow stops (unless overridden at flow level).
+
+---
+
+## Fallback participant
+
+The `onError` field also accepts the **name of another participant**. When the step fails, execution is redirected to that participant instead of stopping or skipping:
+
+```yaml
+participants:
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    onError: notify_failure
+
+  notify_failure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+```
+
+When `deploy` fails, `notify_failure` is called. This allows building fallback chains and cleanup paths without branching the entire flow.
+
+<Aside type="caution">
+  The participant referenced in `onError` must exist in the `participants` block. The runner will reject the workflow at parse time if the reference is invalid.
+</Aside>
+
+### Chaining fallbacks
+
+Fallback participants can themselves have an `onError` policy, forming a chain:
+
+```yaml
+participants:
+  primary:
+    type: exec
+    run: ./primary.sh
+    onError: secondary
+
+  secondary:
+    type: exec
+    run: ./secondary.sh
+    onError: notify
+
+  notify:
+    type: http
+    url: https://hooks.example.com/alert
+    method: POST
+    onError: skip
+```
+
+If `primary` fails → runs `secondary`. If `secondary` also fails → runs `notify`. If `notify` fails → skips (workflow continues).
+
+---
+
+## Timeouts as failures
+
+When a step exceeds its configured `timeout`, it is treated as a failure and the `onError` strategy applies normally. This means you can use `retry` or fallback participants to handle timeouts the same way as other errors:
+
+```yaml
+participants:
+  slowApi:
+    type: http
+    url: https://slow.example.com/endpoint
+    method: GET
+    timeout: 10s
+    onError: retry
+    retry:
+      max: 2
+      backoff: 5s
+```
+
+See [Timeout and Working Directory](/workflows/workflow-files/) for the full timeout precedence rules.
+
+---
+
+## Complete example
+
+A deployment pipeline that combines `retry`, `skip`, fallback participants, and flow-level overrides:
+
+```yaml
+id: deploy-pipeline
+name: Deployment Pipeline
+version: "1"
+
+defaults:
+  timeout: 5m
+
+inputs:
+  env:
+    type: string
+    default: staging
+
+participants:
+  build:
+    type: exec
+    run: npm run build
+    timeout: 3m
+    onError: retry
+    retry:
+      max: 2
+      backoff: 10s
+      factor: 2
+
+  tests:
+    type: exec
+    run: npm test
+    timeout: 2m
+    onError: skip
+
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    timeout: 10m
+    onError: rollback
+
+  rollback:
+    type: exec
+    run: ./rollback.sh
+    timeout: 5m
+    onError: notify_failure
+
+  notify_success:
+    type: http
+    url: https://hooks.example.com/success
+    method: POST
+    onError: skip
+
+  notify_failure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+
+flow:
+  - build
+
+  - tests:
+      onError: fail   # override: fail instead of skip in this pipeline
+
+  - deploy
+
+  - if:
+      condition: deploy.status == "success"
+      then:
+        - notify_success
+      else:
+        - notify_failure
+
+output:
+  buildStatus: build.status
+  deployStatus: deploy.status
+```
+
+In this workflow:
+- `build` retries twice with escalating backoff before failing.
+- `tests` is configured to `skip` by default but overridden to `fail` at flow level.
+- If `deploy` fails, `rollback` runs automatically; if `rollback` also fails, `notify_failure` is called.
+- The final `if` block handles the success/failure notification regardless of how the flow ended.
+
+---
+
+# Nested Workflows
+> Compose and reuse workflows by calling other workflow files as steps.
+
+
+duckflux workflows can call other workflow files as steps, enabling composition and reuse. A sub-workflow is just another participant — it receives inputs, executes its own flow, and returns output — the same interface as any other step.
+
+This is the primary mechanism for breaking large workflows into manageable, testable, and reusable pieces.
+
+---
+
+## The `workflow` participant type
+
+A participant of type `workflow` delegates execution to another `.flux.yaml` file:
+
+```yaml
+participants:
+  reviewCycle:
+    type: workflow
+    path: ./review-loop.flux.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+      branch: workflow.inputs.branch
+```
+
+### Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | Yes | Must be `workflow`. |
+| `path` | string | Yes | Path to the sub-workflow file. Resolved relative to the parent workflow's directory. |
+| `input` | map | No | Input values passed to the sub-workflow. Values are CEL expressions. |
+| `timeout` | duration | No | Maximum total time for the sub-workflow to complete. |
+| `onError` | string | No | Error strategy applied to the sub-workflow as a whole. |
+
+---
+
+## Two ways to define a sub-workflow step
+
+### As a named participant (reusable)
+
+Define the sub-workflow in the `participants` block and reference it by name in the `flow`. Use this when the same sub-workflow is called more than once, or when you want to keep the flow clean and readable:
+
+```yaml
+participants:
+  reviewCycle:
+    type: workflow
+    path: ./review-loop.flux.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+      branch: workflow.inputs.branch
+
+flow:
+  - coder
+  - reviewCycle
+  - deploy
+```
+
+### Inline in the flow
+
+Define the sub-workflow directly inside the `flow` using `as` for its name. Use this for one-off sub-workflow calls that do not need to be reused:
+
+```yaml
+flow:
+  - coder
+  - as: reviewCycle
+    type: workflow
+    path: ./review-loop.flux.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+  - deploy
+```
+
+The `as` field is optional. An inline participant without `as` is **anonymous** — its output is only accessible via the [implicit I/O chain](/workflows/inputs-outputs/#implicit-io-chain-piping) and cannot be referenced by name in CEL expressions.
+
+<Aside type="tip">
+  Inline participants are single-use by definition — they exist only at that point in the flow and cannot be referenced elsewhere. If you need to call the same sub-workflow from multiple places, define it in the `participants` block instead.
+</Aside>
+
+---
+
+## Passing inputs
+
+The `input` field maps data from the parent workflow to the sub-workflow's declared inputs. Values are [CEL expressions](/workflows/variables-and-expressions/) and can reference any variable available at that point in the flow:
+
+```yaml
+participants:
+  analyze:
+    type: workflow
+    path: ./analyze.flux.yaml
+    input:
+      repo: workflow.inputs.repoUrl
+      commit: coder.output.commitSha
+      threshold: "7"
+```
+
+- `workflow.inputs.repoUrl` — from the parent workflow's inputs.
+- `coder.output.commitSha` — from a previous step's output.
+- `"7"` — a literal string value.
+
+The sub-workflow receives these as its own `workflow.inputs.*` variables. Any inputs not provided default to the sub-workflow's declared `default` values, if set.
+
+<Aside>
+  Inputs are always strings unless the sub-workflow declares a typed schema. This follows the [string-by-default](/workflows/inputs-outputs/) principle — the caller and callee agree on the interface through the sub-workflow's `inputs` block.
+</Aside>
+
+---
+
+## Accessing outputs
+
+After a sub-workflow step completes, its output is accessible in the parent workflow as `<step>.output.*`, exactly like any other participant:
+
+```yaml
+flow:
+  - reviewCycle
+  - deploy:
+      when: reviewCycle.output.approved == true
+```
+
+The output exposed to the parent is whatever the sub-workflow defines in its own `output` block. If the sub-workflow has no `output` block, the output of its last executed step is used.
+
+```yaml
+# review-loop.flux.yaml
+flow:
+  - loop:
+      until: reviewer.output.approved == true
+      max: 5
+      steps:
+        - reviewer
+        - coder:
+            when: reviewer.output.approved == false
+
+output:
+  approved: reviewer.output.approved
+  score: reviewer.output.score
+  rounds: loop.iteration
+```
+
+In the parent workflow, `reviewCycle.output.approved`, `reviewCycle.output.score`, and `reviewCycle.output.rounds` are all accessible.
+
+---
+
+## Behavior and isolation
+
+Sub-workflows behave like any other step from the parent's perspective, but run with their own isolated context:
+
+- **Isolated `execution.context`** — the sub-workflow gets its own scratchpad, separate from the parent. Data does not leak between them.
+- **Shared event hub** — the parent's [event hub](/workflows/events/) is passed down to all sub-workflows. Events emitted by the parent are visible to sub-workflows and vice versa. To isolate events, run the sub-workflow as a separate `duckflux run` process instead.
+- **`onError` and `timeout` apply to the whole sub-workflow** — if the sub-workflow exceeds its timeout or fails, the parent's `onError` strategy for that step applies.
+- **Nesting is supported** — a sub-workflow can itself call other sub-workflows. There is no hard depth limit, but deep nesting adds complexity.
+- **Path resolution** — paths in `path` are resolved relative to the parent workflow file's directory, not the working directory at runtime.
+
+<Aside type="caution">
+  Circular references (workflow A calls workflow B which calls workflow A) are not detected at parse time by JSON Schema validation — they will cause a runtime error. The linter (`duckflux lint`) performs this check. See [Tooling](/tooling/).
+</Aside>
+
+---
+
+## Sub-workflows in other constructs
+
+Since sub-workflow steps follow the same interface as all other participants, they work inside any flow construct.
+
+### Inside a loop
+
+```yaml
+flow:
+  - loop:
+      as: attempt
+      until: reviewCycle.output.approved == true
+      max: 3
+      steps:
+        - as: reviewCycle
+          type: workflow
+          path: ./review-cycle.flux.yaml
+          input:
+            round: attempt.iteration
+```
+
+### Inside a conditional
+
+```yaml
+flow:
+  - runTests
+  - if:
+      condition: runTests.output.passed == true
+      then:
+        - as: deploy
+          type: workflow
+          path: ./deploy.flux.yaml
+          input:
+            env: workflow.inputs.targetEnv
+      else:
+        - as: notify
+          type: workflow
+          path: ./notify-failure.flux.yaml
+```
+
+### Inside parallel
+
+```yaml
+flow:
+  - parallel:
+      - as: lintCheck
+        type: workflow
+        path: ./lint.flux.yaml
+      - as: securityScan
+        type: workflow
+        path: ./security.flux.yaml
+      - as: buildArtifact
+        type: workflow
+        path: ./build.flux.yaml
+```
+
+All three sub-workflows run concurrently. Their outputs are available after the `parallel` block completes.
+
+---
+
+## Complete example
+
+A parent pipeline that orchestrates three sub-workflows — a review cycle, a build, and a deployment — using outputs from each step to drive the next:
+
+```yaml
+# pipeline.flux.yaml
+id: release-pipeline
+name: Release Pipeline
+version: "1"
+
+defaults:
+  timeout: 30m
+
+inputs:
+  branch:
+    type: string
+    default: "main"
+  environment:
+    type: string
+    default: "staging"
+  max_review_rounds:
+    type: integer
+    default: 5
+
+participants:
+  reviewCycle:
+    type: workflow
+    path: ./review-cycle.flux.yaml
+    input:
+      branch: workflow.inputs.branch
+      maxRounds: workflow.inputs.max_review_rounds
+    timeout: 20m
+    onError: fail
+
+  buildArtifact:
+    type: workflow
+    path: ./build.flux.yaml
+    input:
+      branch: workflow.inputs.branch
+      commitSha: reviewCycle.output.commitSha
+    timeout: 10m
+
+  deployRelease:
+    type: workflow
+    path: ./deploy.flux.yaml
+    input:
+      artifact: buildArtifact.output.artifactUrl
+      environment: workflow.inputs.environment
+    timeout: 15m
+
+  notifySuccess:
+    type: http
+    url: https://hooks.example.com/success
+    method: POST
+    onError: skip
+
+  notifyFailure:
+    type: http
+    url: https://hooks.example.com/failure
+    method: POST
+    onError: skip
+
+flow:
+  - reviewCycle
+
+  - buildArtifact:
+      when: reviewCycle.output.approved == true
+
+  - deployRelease:
+      when: buildArtifact.status == "success"
+
+  - if:
+      condition: deployRelease.status == "success"
+      then:
+        - notifySuccess
+      else:
+        - notifyFailure
+
+output:
+  approved: reviewCycle.output.approved
+  artifact: buildArtifact.output.artifactUrl
+  deployed: deployRelease.status
+```
+
+Each sub-workflow encapsulates its own logic, inputs, and outputs. The parent pipeline remains concise and focused on orchestration — routing data between steps and making high-level decisions.
+
+---
+
+# Runtimes
+> Install a duckflux runtime and run your first workflow from the command line.
+
+
+Duckflux workflows are plain YAML files — they don't run on their own. You need a **runtime** to execute them.
+
+Two official runtimes are available:
+
+| Runtime | Language | Best for |
+|---------|----------|----------|
+| **Go runner** | Go | Production use, CLI tooling, CI/CD pipelines |
+| **JavaScript runtime** | Node.js | Scripting, custom participants, JS ecosystems |
+
+Both runtimes share the same `quack` command and behave identically for standard workflows.
+
+<CardGrid>
+  <LinkCard title="Runner CLI (Go)" href="/runner-cli/installation/" description="Production-ready CLI runner written in Go." />
+  <LinkCard title="JavaScript Runtime" href="/javascript-runtime/installation/" description="TypeScript runtime for Node.js and Bun." />
+</CardGrid>
+
+---
+
+## Install a runtime
+
+<Tabs>
+  <TabItem label="Go runner">
+    See the [Go runner installation guide](/runner-cli/installation/) for setup instructions.
+  </TabItem>
+  <TabItem label="JavaScript runtime">
+    See the [JavaScript runtime installation guide](/javascript-runtime/installation/) for setup instructions.
+  </TabItem>
+</Tabs>
+
+---
+
+## Run a workflow
+
+Once a runtime is installed, use `quack` to run any `.flux.yaml` file:
+
+```sh
+quack hello.flux.yaml
+```
+
+That's the full command. The runtime reads the file, executes the flow, and prints the output.
+
+### Specifying a working directory
+
+Use `--cwd` to set the base working directory for `exec` participants:
+
+```sh
+quack deploy.flux.yaml --cwd ./repo
+```
+
+This is equivalent to setting `defaults.cwd` in the workflow file itself, but applied from the command line. Useful when the workflow is shared but the working directory varies per environment.
+
+<Aside type="tip">
+  The `--cwd` flag sets the base directory. Individual participants can still override it with their own `cwd` field. See [Workflow files](/workflows/) for the full precedence rules.
+</Aside>
+
+---
+
+# Introduction
+> Introdução ao Runner CLI.
+
+
+Resumo do propósito do Runner e arquitetura básica.
+
+---
+
+# Installation
+> Como instalar o Runner CLI.
+
+
+Passos para instalar o Runner no seu sistema.
+
+---
+
+# Running workflows
+> Executando workflows com o Runner CLI.
+
+
+Instruções para executar workflows localmente e em produção.
+
+---
+
+# Linting/validation
+> Ferramentas de lint/validação para workflows.
+
+
+Como validar seus arquivos de workflow antes da execução.
+
+---
+
+# Event hubs
+> Configure and use event hub backends in the duckflux Runner CLI — memory, NATS JetStream, and Redis Streams.
+
+
+The event hub is the pub/sub layer that connects [`emit`](/workflows/events/) participants to [`wait`](/workflows/events/#waiting-for-events) steps. The Runner CLI supports three interchangeable backends — you choose one via the `--event-backend` flag. All backends expose the same semantics; they differ in infrastructure requirements and delivery guarantees.
+
+---
+
+## Backends at a glance
+
+| Backend | Flag value | Infrastructure | Replay (subscribe after publish) | Fan-out |
+|---------|-----------|---------------|----------------------------------|---------|
+| In-memory | `memory` (default) | None | Yes | Yes |
+| NATS JetStream | `nats` | NATS server | No (ephemeral consumers start at latest offset) | Yes |
+| Redis Streams | `redis` | Redis server | Yes (consumer group reads from stream start) | Yes |
+
+<Aside type="tip">
+  Start with the default `memory` backend — it requires no external services and is sufficient for single-process workflows. Switch to NATS or Redis when you need cross-process event delivery or durable persistence.
+</Aside>
+
+---
+
+## CLI flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--event-backend` | string | `memory` | Backend selection: `memory`, `nats`, or `redis`. |
+| `--nats-url` | string | — | NATS server URL. **Required** when `--event-backend=nats`. |
+| `--nats-stream` | string | `duckflux-events` | JetStream stream name. |
+| `--redis-addr` | string | `localhost:6379` | Redis server address. |
+| `--redis-db` | int | `0` | Redis database number. |
+
+---
+
+## In-memory backend (default)
+
+The memory backend uses an in-process Go channel (via Watermill's GoChannel). No external services are needed.
+
+```bash
+duckflux run workflow.flux.yaml
+# equivalent to:
+duckflux run workflow.flux.yaml --event-backend=memory
+```
+
+### Characteristics
+
+- **Persistent mode enabled** — subscribers created after a `Publish` still receive past events. This means a `wait` step placed after an `emit` in the flow will correctly receive the event, even though the subscription starts after the event was published.
+- **Single process only** — events are not visible to other `duckflux run` processes.
+- **No setup required** — works out of the box.
+
+<Aside>
+  The memory backend is ideal for development, testing, and workflows that run as a single process. For production use cases where events need to cross process boundaries or survive restarts, use NATS or Redis.
+</Aside>
+
+---
+
+## NATS JetStream backend
+
+Uses [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) for durable, distributed event delivery.
+
+```bash
+duckflux run workflow.flux.yaml \
+  --event-backend=nats \
+  --nats-url=nats://localhost:4222
+```
+
+### Pre-creating streams
+
+NATS JetStream stream names cannot contain dots, but duckflux event names use dot-notation (e.g. `payment.processed`). The runner handles this transparently by looking up streams by subject rather than by name.
+
+You **must** create streams before running. Replace dots with underscores in the stream name and use the original dot-notation event name as the subject:
+
+```bash
+nats stream add payment_processed \
+  --subjects "payment.processed" \
+  --storage file \
+  --replicas 1 \
+  --server nats://localhost:4222
+```
+
+Then reference the event normally in your workflow:
+
+```yaml
+participants:
+  notify:
+    type: emit
+    event: "payment.processed"
+    payload:
+      transactionId: "TXN-42"
+```
+
+<Aside type="caution">
+  If no stream is found for the event subject, the runner returns an error at subscribe time: `no stream found for subject "..."`. Make sure all event names used in `emit` and `wait` have a corresponding JetStream stream.
+</Aside>
+
+### Characteristics
+
+- **Ephemeral consumers** — each subscription creates an ephemeral JetStream consumer that is automatically cleaned up when the subscription ends.
+- **Subject-based stream lookup** — the runner uses `StreamNameBySubject` to find the correct stream, so dot-notation in event names works transparently.
+- **No replay** — ephemeral consumers start at the latest offset. If an event is published before the subscriber is ready, it will be missed. Design your flow accordingly (emit after the wait is registered, or use the memory backend for in-process replay).
+
+---
+
+## Redis Streams backend
+
+Uses [Redis Streams](https://redis.io/docs/data-types/streams/) for persistent event delivery.
+
+```bash
+duckflux run workflow.flux.yaml \
+  --event-backend=redis \
+  --redis-addr=localhost:6379
+```
+
+### Characteristics
+
+- **Consumer groups** — the runner creates a consumer group named `duckflux` (configurable) for each event stream. This enables fan-out to multiple consumers.
+- **Replay support** — consumer groups read from the start of the stream, so events published before a subscriber is ready are still delivered.
+- **Auto-created streams** — Redis creates streams automatically on first publish. No manual setup is required.
+- **Stream key = event name** — the event name string is used directly as the Redis stream key.
+
+### Custom Redis database
+
+Use `--redis-db` to target a specific Redis database:
+
+```bash
+duckflux run workflow.flux.yaml \
+  --event-backend=redis \
+  --redis-addr=redis.internal:6379 \
+  --redis-db=2
+```
+
+---
+
+## Sub-workflow hub sharing
+
+The event hub is shared recursively with all sub-workflows. An event emitted by the parent is visible to sub-workflows and vice versa — they all use the same underlying pub/sub bus.
+
+```yaml
+# parent.flux.yaml
+participants:
+  trigger:
+    type: emit
+    event: "job.started"
+    payload:
+      jobId: "42"
+
+  child:
+    type: workflow
+    path: ./child.flux.yaml
+
+flow:
+  - trigger    # publishes job.started to the shared hub
+  - child      # child.flux.yaml can wait for job.started
+```
+
+```yaml
+# child.flux.yaml
+flow:
+  - wait:
+      event: "job.started"
+      match: event.jobId == "42"
+      timeout: 10s
+
+  - as: process
+    type: exec
+    run: echo "Processing job"
+```
+
+<Aside type="caution">
+  To isolate a sub-workflow's events from the parent, run it as a separate `duckflux run` process instead of a `type: workflow` participant. Each process gets its own event hub instance.
+</Aside>
+
+---
+
+## Choosing a backend
+
+| Scenario | Recommended backend |
+|----------|-------------------|
+| Local development and testing | `memory` |
+| Single-process workflows | `memory` |
+| Cross-process event delivery | `nats` or `redis` |
+| Durable event persistence | `redis` (auto-created streams) or `nats` (pre-created streams) |
+| Existing NATS infrastructure | `nats` |
+| Existing Redis infrastructure | `redis` |
+
+---
+
+## Examples
+
+### Fire-and-forget with memory backend
+
+```bash
+duckflux run examples/events.flux.yaml
+```
+
+### Acknowledged emit with NATS
+
+```bash
+# Create the stream first
+nats stream add deploy_started \
+  --subjects "deploy.started" \
+  --storage file \
+  --replicas 1
+
+# Run the workflow
+duckflux run deploy.flux.yaml \
+  --event-backend=nats \
+  --nats-url=nats://localhost:4222
+```
+
+### Cross-process events with Redis
+
+Terminal 1 — wait for an event:
+
+```bash
+duckflux run listener.flux.yaml \
+  --event-backend=redis \
+  --redis-addr=localhost:6379
+```
+
+Terminal 2 — emit the event:
+
+```bash
+duckflux run emitter.flux.yaml \
+  --event-backend=redis \
+  --redis-addr=localhost:6379
+```
+
+Both processes share the same Redis Streams backend, so events emitted in one are visible to the other.
+
+---
+
+# CLI Usage
+> How to use the DuckFlux CLI to run workflows.
+
+
+The `@duckflux/runner` package ships a `duckflux` binary that lets you run, lint, and validate workflows from the command line.
+
+```bash
+duckflux <command> <workflow.yaml> [flags]
+```
+
+---
+
+## Installation
+
+<Tabs>
+  <TabItem label="No install">
+    Run without installing — always uses the latest published version.
+
+    ```bash
+    # Node.js
+    npx duckflux run workflow.yaml
+
+    # Bun
+    bunx duckflux run workflow.yaml
+    ```
+  </TabItem>
+
+  <TabItem label="macOS (brew)">
+    Install via [Homebrew](https://brew.sh):
+
+    ```bash
+    brew install duckflux/tap/duckflux-js
+    ```
+  </TabItem>
+
+  <TabItem label="Linux (apt)">
+    Install via apt:
+
+    ```bash
+    ```
+  </TabItem>
+
+  <TabItem label="Generic (npm/Bun)">
+    Install globally so `duckflux` is available everywhere on your machine.
+
+    ```bash
+    # npm
+    npm install -g duckflux
+
+    # Bun
+    bun add -g duckflux
+    ```
+
+    Verify:
+
+    ```bash
+    duckflux version
+    ```
+  </TabItem>
+
+  <TabItem label="Others">
+    Download a self-contained binary (no Node.js or Bun required) from the [GitHub Releases page](https://github.com/duckflux/runtime-js/releases/latest).
+
+    | Platform | File |
+    |---|---|
+    | macOS ARM64 (Apple Silicon) | `duckflux-darwin-arm64` |
+    | macOS x64 (Intel) | `duckflux-darwin-x64` |
+    | Linux x64 | `duckflux-linux-x64` |
+    | Linux ARM64 | `duckflux-linux-arm64` |
+    | Windows x64 | `duckflux-windows-x64.exe` |
+
+    **macOS / Linux:**
+
+    ```bash
+    # Example for macOS ARM64 — replace the filename for your platform
+    curl -fsSL https://github.com/duckflux/runtime-js/releases/latest/download/duckflux-darwin-arm64 \
+      -o /usr/local/bin/duckflux
+    chmod +x /usr/local/bin/duckflux
+    duckflux version
+    ```
+
+    **Windows:** download the `.exe`, place it somewhere on your `%PATH%`, and run it directly.
+  </TabItem>
+</Tabs>
+
+---
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| [`run`](#run) | Execute a workflow |
+| [`lint`](#lint) | Validate schema and detect common issues (no execution) |
+| [`validate`](#validate) | Full validation including input schema |
+| [`version`](#version) | Print the CLI version |
+
+---
+
+## `run`
+
+Executes a workflow from a YAML file and prints the result to `stdout`.
+
+```bash
+duckflux run <workflow.yaml> [flags]
+```
+
+`run` is the default command — if the first positional argument is a `.yaml` file and no subcommand is given, it is implied:
+
+```bash
+duckflux workflow.yaml   # same as: duckflux run workflow.yaml
+```
+
+### Flags
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--input` | `-i` | string | — | Input as `key=value`. Repeatable. Values are JSON-parsed, falling back to strings. |
+| `--input-file` | — | string | — | Path to a JSON file containing workflow inputs. |
+| `--cwd` | — | string | — | Working directory used for `exec` participants. |
+| `--event-backend` | — | string | `memory` | Event hub backend: `memory`, `nats`, or `redis`. |
+| `--nats-url` | — | string | — | NATS server URL. Required when `--event-backend=nats`. |
+| `--nats-stream` | — | string | `duckflux-events` | JetStream stream name. |
+| `--redis-addr` | — | string | `localhost:6379` | Redis server address (`host:port`). |
+| `--redis-db` | — | string | `0` | Redis database number. |
+| `--verbose` | `-v` | boolean | `false` | Print error stack traces to `stderr`. |
+| `--quiet` | — | boolean | `false` | Suppress `stdout` output. |
+
+### Input sources
+
+Inputs are merged from multiple sources. Higher entries take priority:
+
+1. `--input` flags (highest)
+2. `--input-file` contents
+3. JSON piped via `stdin` (when no other input source is provided)
+
+### `--input` value parsing
+
+Values are JSON-parsed first, falling back to plain strings:
+
+```bash
+--input name=World        # {name: "World"}
+--input count=3           # {count: 3}
+--input active=true       # {active: true}
+--input data='{"x":1}'    # {data: {x: 1}}
+--input items='[1,2,3]'   # {items: [1, 2, 3]}
+--input flag              # {flag: true}  (no "=" → boolean true)
+```
+
+### Output
+
+- `string` output → printed as-is (no trailing newline added)
+- Object/array output → printed as formatted JSON (2-space indent)
+- `null` / `undefined` output → nothing printed
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Workflow succeeded |
+| `1` | Execution error (file not found, parse error, unhandled exception) |
+| `2` | Workflow ran but returned `success: false` |
+
+### Examples
+
+```bash
+# Basic execution
+duckflux run workflow.yaml
+
+# Pass inputs
+duckflux run workflow.yaml --input name=World --input count=3
+
+# Inputs from file
+duckflux run workflow.yaml --input-file inputs.json
+
+# Piped inputs
+cat inputs.json | duckflux run workflow.yaml
+
+# Custom working directory with verbose errors
+duckflux run workflow.yaml --cwd /workspace --verbose
+
+# NATS event backend
+duckflux run workflow.yaml \
+  --event-backend=nats \
+  --nats-url=nats://localhost:4222
+
+# Redis event backend
+duckflux run workflow.yaml \
+  --event-backend=redis \
+  --redis-addr=localhost:6379
+```
+
+---
+
+## `lint`
+
+Validates a workflow file without executing it. Checks schema correctness, semantic consistency, and common authoring issues.
+
+```bash
+duckflux lint <workflow.yaml>
+```
+
+### Checks performed
+
+1. **Schema validation** — the file must conform to the duckflux JSON schema.
+2. **Semantic validation** — participant references, variable bindings, and imports are verified.
+3. **Lint warnings** (non-blocking) — the following patterns are flagged:
+   - Loops without both `until` and `max` conditions (infinite-loop risk)
+   - Parallel branches writing to the same context variable (race condition risk)
+   - Inline participants without an `as` name (output unreachable by name)
+
+If all checks pass, `valid` is printed to `stdout`. Errors and warnings go to `stderr`.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Workflow is valid |
+| `1` | Validation failed or file could not be read |
+
+### Example
+
+```bash
+duckflux lint workflow.yaml
+
+# CI-friendly: capture all output
+duckflux lint workflow.yaml 2>&1
+
+# Check exit code
+if duckflux lint workflow.yaml; then
+  echo "Ready to run"
+fi
+```
+
+---
+
+## `validate`
+
+Performs the same checks as [`lint`](#lint), and additionally validates provided inputs against the workflow's declared `inputs` schema.
+
+```bash
+duckflux validate <workflow.yaml> [flags]
+```
+
+### Flags
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--input` | `-i` | string | — | Input as `key=value`. Repeatable. |
+| `--input-file` | — | string | — | Path to a JSON file containing inputs. |
+
+`stdin` is also accepted (same rules as `run`).
+
+### Checks performed
+
+1. Schema validation
+2. Semantic validation
+3. **Input schema validation** — types, `enum`, `min`, `max`, `pattern`, `format`, and required fields are all checked against the values you provide.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All validations passed |
+| `1` | Validation failed |
+
+### Examples
+
+```bash
+# Validate structure only
+duckflux validate workflow.yaml
+
+# Validate structure + inputs
+duckflux validate workflow.yaml --input name=World --input count=3
+
+# Inputs from file
+duckflux validate workflow.yaml --input-file test-inputs.json
+
+# Piped inputs
+echo '{"name":"World"}' | duckflux validate workflow.yaml
+```
+
+---
+
+## `version`
+
+Prints the CLI version to `stdout`.
+
+```bash
+duckflux version
+# 0.6.0
+```
+
+Always exits with code `0`.
+
+---
+
+## Event hub backends
+
+The `--event-backend` flag (used with `run`) selects the pub/sub layer for [`emit`](/workflows/events/) and [`wait`](/workflows/events/#waiting-for-events) participants.
+
+| Backend | Flag value | Infrastructure | Replay | Cross-process |
+|---------|-----------|---------------|--------|--------------|
+| In-memory | `memory` (default) | None | Yes | No |
+| NATS JetStream | `nats` | NATS server | No | Yes |
+| Redis Streams | `redis` | Redis server | Yes | Yes |
+
+<Aside type="tip">
+  The default `memory` backend requires no external services and supports in-process replay. Switch to `nats` or `redis` when you need cross-process event delivery.
+</Aside>
+
+For detailed configuration of each backend see [Event hub providers](/runtime/event-hub-providers/).
+
+---
+
+## Error handling
+
+**Unknown command** — prints available commands and exits with code `1`.
+
+**Missing file argument** — prints the command's usage string to `stderr` and exits with code `1`.
+
+**Backend not installed** — if `@duckflux/hub-nats` or `@duckflux/hub-redis` is missing, the CLI prints an installation hint and exits with code `1`:
+
+```
+Error: NATS backend requires @duckflux/hub-nats — install it with: bun add @duckflux/hub-nats
+```
+
+**`--nats-url` missing** — required when `--event-backend=nats`; exits with code `1` if omitted.
+
+**`--verbose` / `-v`** — appends the full stack trace to `stderr` for any error, regardless of command.
+
+---
+
+# Event hub providers
+> How to connect the runtime to event hubs and channels.
+
+
+DuckFlux supports three event hub backends for [`emit`](/workflows/events/) and [`wait`](/workflows/events/#waiting-for-events) steps. All three implement the same `EventHub` interface — you can swap backends without changing your workflow YAML.
+
+| Backend | Package | Infrastructure | Replay | Cross-process |
+|---------|---------|---------------|--------|--------------|
+| In-memory | `@duckflux/core` (built-in) | None | Yes | No |
+| NATS JetStream | `@duckflux/hub-nats` | NATS server | No | Yes |
+| Redis Streams | `@duckflux/hub-redis` | Redis server | Yes | Yes |
+
+<Aside type="tip">
+  The `memory` backend requires no external services and is the right default for local development and single-process workflows. Use `nats` or `redis` when you need events to cross process or machine boundaries.
+</Aside>
+
+---
+
+## `EventHub` interface
+
+All backends implement this interface:
+
+```typescript
+interface EventHub {
+  publish(event: string, payload: unknown): Promise<void>;
+  publishAndWaitAck(event: string, payload: unknown, timeoutMs: number): Promise<void>;
+  subscribe(event: string, signal?: AbortSignal): AsyncIterable<EventEnvelope>;
+  close(): Promise<void>;
+}
+
+interface EventEnvelope {
+  name: string;
+  payload: unknown;
+}
+```
+
+The hub is optional — you only need one if your workflow uses `emit` or `wait.event` steps. When absent, those steps will throw at runtime.
+
+---
+
+## Backends
+
+<Tabs>
+  <TabItem label="Memory">
+    The default backend. Events are held in-process; no external infrastructure needed.
+
+    **Characteristics:**
+    - Replay: subscribers that connect **after** `publish` still receive the event — the hub buffers all events until `close()`.
+    - Fan-out: multiple `subscribe()` calls on the same event each receive every message independently.
+    - Single-process only: events do not cross process boundaries.
+
+    #### Library usage
+
+    ```typescript
+    import { MemoryHub, executeWorkflow } from "@duckflux/core";
+
+    const hub = new MemoryHub();
+    const result = await executeWorkflow(workflow, inputs, basePath, { hub });
+    await hub.close();
+    ```
+
+    #### CLI usage
+
+    ```bash
+    duckflux run workflow.yaml
+    # --event-backend defaults to "memory", no flag required
+
+    duckflux run workflow.yaml --event-backend=memory
+    ```
+  </TabItem>
+
+  <TabItem label="NATS">
+    Uses [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) for distributed event delivery.
+
+    **Characteristics:**
+    - No replay: subscribers only receive events published **after** they subscribe (ephemeral ordered consumers).
+    - Fan-out: each `NatsHub` instance gets an independent consumer — multiple instances on the same server each receive every message.
+    - Stream names: NATS JetStream does not allow dots in stream names, so duckflux replaces dots with underscores internally (`order.payment.done` → stream `order_payment_done`). Subjects keep their original dot notation.
+
+    #### Installation
+
+    ```bash
+    # Bun
+    bun add @duckflux/hub-nats
+
+    # npm
+    npm install @duckflux/hub-nats
+    ```
+
+    #### Library usage
+
+    ```typescript
+    import { NatsHub } from "@duckflux/hub-nats";
+    import { executeWorkflow } from "@duckflux/core";
+
+    const hub = await NatsHub.create({
+      url: "nats://localhost:4222",
+      stream: "duckflux-events", // optional — defaults to the topic name
+    });
+
+    const result = await executeWorkflow(workflow, inputs, basePath, { hub });
+    await hub.close();
+    ```
+
+    #### CLI usage
+
+    ```bash
+    duckflux run workflow.yaml \
+      --event-backend=nats \
+      --nats-url=nats://localhost:4222
+
+    # With a custom stream name
+    duckflux run workflow.yaml \
+      --event-backend=nats \
+      --nats-url=nats://localhost:4222 \
+      --nats-stream=my-stream
+    ```
+
+    #### Configuration reference
+
+    | Option | CLI flag | Type | Default | Description |
+    |--------|----------|------|---------|-------------|
+    | `url` | `--nats-url` | string | — | NATS server URL. **Required.** |
+    | `stream` | `--nats-stream` | string | `duckflux-events` | JetStream stream name. |
+
+    <Aside type="caution">
+      `--nats-url` is required when `--event-backend=nats`. The CLI exits with code `1` if it is omitted.
+    </Aside>
+
+    #### Running a local NATS server
+
+    ```bash
+    # Docker
+    docker run -p 4222:4222 nats:latest -js
+
+    # Or with nats-server installed
+    nats-server -js
+    ```
+  </TabItem>
+
+  <TabItem label="Redis">
+    Uses [Redis Streams](https://redis.io/docs/data-types/streams/) (`XADD` / `XREADGROUP`) for persistent, distributed event delivery.
+
+    **Characteristics:**
+    - Replay: the hub reads from stream position `0`, so subscribers receive events published before they connected.
+    - Fan-out: hubs with **different** `consumerGroup` names each receive all messages independently. Hubs with the same consumer group share the load (competing consumers).
+    - Persistence: messages remain in the Redis stream after consumption and can be re-read by new consumer groups.
+
+    #### Installation
+
+    ```bash
+    # Bun
+    bun add @duckflux/hub-redis
+
+    # npm
+    npm install @duckflux/hub-redis
+    ```
+
+    #### Library usage
+
+    ```typescript
+    import { RedisHub } from "@duckflux/hub-redis";
+    import { executeWorkflow } from "@duckflux/core";
+
+    const hub = await RedisHub.create({
+      addr: "localhost:6379",  // optional — this is the default
+      db: 0,                   // optional — this is the default
+      consumerGroup: "my-app", // optional — defaults to "duckflux"
+    });
+
+    const result = await executeWorkflow(workflow, inputs, basePath, { hub });
+    await hub.close();
+    ```
+
+    #### CLI usage
+
+    ```bash
+    duckflux run workflow.yaml \
+      --event-backend=redis \
+      --redis-addr=localhost:6379
+
+    # With custom options
+    duckflux run workflow.yaml \
+      --event-backend=redis \
+      --redis-addr=redis.internal:6379 \
+      --redis-db=2
+    ```
+
+    #### Configuration reference
+
+    | Option | CLI flag | Type | Default | Description |
+    |--------|----------|------|---------|-------------|
+    | `addr` | `--redis-addr` | string | `localhost:6379` | Redis server address (`host:port`). |
+    | `db` | `--redis-db` | number | `0` | Redis database number. |
+    | `consumerGroup` | — | string | `duckflux` | Consumer group name. Different groups = independent fan-out. |
+
+    <Aside type="note">
+      The `consumerGroup` option is only available in library mode. The CLI always uses the default group name `duckflux`.
+    </Aside>
+
+    #### Running a local Redis server
+
+    ```bash
+    # Docker
+    docker run -p 6379:6379 redis:latest
+
+    # Or with redis-server installed
+    redis-server
+    ```
+  </TabItem>
+
+  <TabItem label="Custom">
+    You can implement your own backend by satisfying the `EventHub` interface from `@duckflux/core` — for example, to integrate with Kafka, an in-house broker, or a test double.
+
+    See [Implementing a custom event hub](/runtime/library/#implementing-a-custom-event-hub) for the full interface contract, a minimal working implementation, and a testing pattern.
+  </TabItem>
+</Tabs>
+
+---
+
+## Passing a hub in library mode
+
+The hub is injected via `ExecuteOptions` and propagated automatically through the entire execution — including sub-workflows, loops, parallel branches, and conditionals.
+
+```typescript
+
+const result = await executeWorkflow(
+  workflow,
+  inputs,
+  basePath,
+  { hub }, // <-- inject here
+);
+```
+
+Always call `hub.close()` when execution is complete to release connections and internal buffers.
+
+### Sub-workflows
+
+When a workflow calls a sub-workflow, the same hub instance is passed down. This means a parent can `wait` for an event emitted by a child:
+
+```yaml
+# parent.yaml
+flow:
+  - call: child.yaml
+  - wait:
+      event: child.done
+      timeout: 10s
+output: event.result
+```
+
+```yaml
+# child.yaml
+flow:
+  - type: emit
+    event: child.done
+    payload:
+      result: '"hello from child"'
+```
+
+```typescript
+const hub = new MemoryHub();
+const result = await executeWorkflow(parentWorkflow, {}, basePath, { hub });
+// result.output === "hello from child"
+await hub.close();
+```
+
+---
+
+## Choosing a backend
+
+| Scenario | Recommended backend |
+|----------|-------------------|
+| Local development, single process | `memory` |
+| Multiple processes on the same machine | `redis` (simple) or `nats` |
+| Distributed systems, microservices | `nats` or `redis` |
+| Need event replay for late subscribers | `memory` or `redis` |
+| Low-latency, high-throughput messaging | `nats` |
+| Events must survive process restarts | `redis` |
+
+---
+
+# Library usage
+> How to embed the DuckFlux runtime into your own JavaScript or TypeScript application.
+
+
+`@duckflux/core` is a fully embeddable runtime library. You can parse, validate, and execute DuckFlux workflows programmatically — no CLI required.
+
+Common use cases:
+- Embedding a workflow engine inside an existing application
+- Running workflows as part of a build pipeline or test suite
+- Implementing a custom orchestrator backed by DuckFlux
+
+---
+
+## Packages
+
+The runtime is split into four packages:
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| [`@duckflux/core`](https://www.npmjs.com/package/@duckflux/core) | [![npm](https://img.shields.io/npm/v/%40duckflux%2Fcore)](https://www.npmjs.com/package/@duckflux/core) | Engine, parser, CEL evaluator, in-memory event hub. The only required package. |
+| [`@duckflux/runner`](https://www.npmjs.com/package/@duckflux/runner) | [![npm](https://img.shields.io/npm/v/%40duckflux%2Frunner)](https://www.npmjs.com/package/@duckflux/runner) | CLI binary (`duckflux run`, `lint`, `validate`). Exposes `@duckflux/core` in CLI. |
+| [`@duckflux/hub-nats`](https://www.npmjs.com/package/@duckflux/hub-nats) | [![npm](https://img.shields.io/npm/v/%40duckflux%2Fhub-nats)](https://www.npmjs.com/package/@duckflux/hub-nats) | Optional NATS JetStream event hub backend. |
+| [`@duckflux/hub-redis`](https://www.npmjs.com/package/@duckflux/hub-redis) | [![npm](https://img.shields.io/npm/v/%40duckflux%2Fhub-redis)](https://www.npmjs.com/package/@duckflux/hub-redis) | Optional Redis Streams event hub backend. |
+
+---
+
+## Installation
+
+<Tabs>
+  <TabItem label="Bun">
+    ```bash
+    bun add @duckflux/core
+    ```
+  </TabItem>
+  <TabItem label="npm">
+    ```bash
+    npm install @duckflux/core
+    ```
+  </TabItem>
+</Tabs>
+
+---
+
+## Quick start
+
+```typescript
+
+const yaml = `
+name: greet
+inputs:
+  name:
+    type: string
+    required: true
+flow:
+  - type: exec
+    as: greeter
+    run: sh -c 'name=$(cat -); echo "Hello, $name!"'
+    input: workflow.inputs.name
+output: greeter.output
+`;
+
+const workflow = parseWorkflow(yaml);
+const result = await executeWorkflow(workflow, { name: "World" });
+
+console.log(result.output);  // "Hello, World!"
+console.log(result.success); // true
+```
+
+---
+
+## Parsing workflows
+
+### From a YAML string
+
+```typescript
+
+const workflow = parseWorkflow(yamlString);
+```
+
+`parseWorkflow` is synchronous and returns a `Workflow` object. It parses YAML but does not validate — call `validateSchema` afterwards if needed.
+
+### From a file
+
+```typescript
+
+const workflow = await parseWorkflowFile("./workflows/process.yaml");
+```
+
+`parseWorkflowFile` reads and parses a YAML file asynchronously.
+
+### `Workflow` type
+
+```typescript
+interface Workflow {
+  id?:           string;
+  name?:         string;
+  version?:      string | number;
+  defaults?:     WorkflowDefaults;
+  inputs?:       Record<string, InputDefinition | null>;
+  participants?: Record<string, Participant>;
+  flow:          FlowStep[];
+  output?:       WorkflowOutput;
+}
+```
+
+---
+
+## Validation
+
+Validation is optional but recommended before execution, especially when workflows come from user input or external sources.
+
+### Schema validation
+
+Checks that the workflow conforms to the DuckFlux JSON schema. Synchronous.
+
+```typescript
+
+const result = validateSchema(workflow);
+if (!result.valid) {
+  console.error(result.errors);
+}
+```
+
+### Semantic validation
+
+Checks participant references, variable bindings, and imported sub-workflow paths. Async (reads the filesystem for `call` participants).
+
+```typescript
+
+const result = await validateSemantic(workflow, basePath);
+if (!result.valid) {
+  console.error(result.errors);
+}
+```
+
+### Input validation
+
+Validates runtime inputs against the workflow's declared `inputs` schema.
+
+```typescript
+
+const result = validateInputs({ name: "World" }, workflow.inputs);
+if (!result.valid) {
+  console.error(result.errors);
+}
+```
+
+`executeWorkflow` also validates inputs automatically before running — this function is useful for pre-flight checks.
+
+### `ValidationResult` type
+
+```typescript
+interface ValidationResult {
+  valid:  boolean;
+  errors: ValidationError[];
+}
+
+interface ValidationError {
+  path:    string;
+  message: string;
+}
+```
+
+---
+
+## Executing workflows
+
+### `executeWorkflow`
+
+```typescript
+async function executeWorkflow(
+  workflow: Workflow,
+  inputs:   Record<string, unknown> = {},
+  basePath: string = process.cwd(),
+  options:  ExecuteOptions = {},
+): Promise<WorkflowResult>
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `workflow` | Parsed `Workflow` object. |
+| `inputs` | Runtime inputs passed to the workflow. Must satisfy `workflow.inputs` if defined. |
+| `basePath` | Root path used to resolve relative file references (`call` participant paths, `exec` participant `cwd`). Defaults to `process.cwd()`. |
+| `options` | Execution options — see below. |
+
+#### `ExecuteOptions`
+
+```typescript
+interface ExecuteOptions {
+  hub?:             EventHub;  // Event hub for emit/wait.event steps.
+  cwd?:             string;    // Override working directory for exec participants.
+  executionNumber?: number;    // Execution counter; available as execution.number in CEL. Defaults to 1.
+  verbose?:         boolean;   // Reserved for CLI use.
+  quiet?:           boolean;   // Reserved for CLI use.
+}
+```
+
+<Aside type="note">
+  `hub` is required only if your workflow uses `emit` or `wait.event` steps. Omitting it for workflows without those steps is fine.
+</Aside>
+
+#### `basePath` and relative paths
+
+`basePath` affects two things:
+
+1. **`call` participants** — the sub-workflow path is resolved relative to `basePath`. When the sub-workflow runs, its own `basePath` becomes the directory containing that file, so nested relative references work correctly.
+2. **`exec` participant `cwd`** — if `cwd` is a relative path, it is resolved against `basePath`.
+
+```typescript
+// Workflow in /app/workflows/main.yaml calls ./helpers/fetch.yaml
+await executeWorkflow(workflow, inputs, "/app/workflows");
+//                                      ^ basePath
+```
+
+### `runWorkflowFromFile`
+
+Convenience wrapper that parses a file and executes it in one call.
+
+```typescript
+
+const result = await runWorkflowFromFile("./workflow.yaml", { name: "World" }, {
+  cwd: "/workspace",
+});
+```
+
+---
+
+## Reading results
+
+### `WorkflowResult`
+
+```typescript
+interface WorkflowResult {
+  success:  boolean;                       // false if any step failed with strategy "fail"
+  output:   unknown;                       // Resolved workflow output (string, object, null, …)
+  steps:    Record<string, StepResult>;   // Results keyed by step name (the as: field)
+  duration: number;                        // Total execution time in milliseconds
+}
+```
+
+### `StepResult`
+
+```typescript
+interface StepResult {
+  status:        "success" | "failure" | "skipped";
+  output:        string;          // Raw output (usually a JSON string)
+  parsedOutput?: unknown;         // Parsed JSON when applicable
+  error?:        string;          // Error message if status === "failure"
+  duration:      number;          // Step execution time in ms
+  startedAt?:    string;          // ISO 8601 timestamp
+  finishedAt?:   string;          // ISO 8601 timestamp
+  retries?:      number;          // Retry attempts made
+  cwd?:          string;          // Working directory used (exec participants)
+  httpStatus?:   number;          // HTTP status code (http participants)
+  responseBody?: string;          // HTTP response body on failure (http participants)
+}
+```
+
+### Example
+
+```typescript
+const result = await executeWorkflow(workflow, inputs, basePath);
+
+if (!result.success) {
+  for (const [name, step] of Object.entries(result.steps)) {
+    if (step.status === "failure") {
+      console.error(`Step "${name}" failed: ${step.error}`);
+    }
+  }
+}
+
+console.log(`Finished in ${result.duration}ms`);
+console.log("Output:", result.output);
+```
+
+---
+
+## Error handling
+
+`executeWorkflow` throws in two cases:
+
+| Situation | What is thrown |
+|-----------|---------------|
+| Input validation fails | `Error("input validation failed: ...")` |
+| A step fails with `onError: fail` (the default) | `WorkflowError` |
+
+### `WorkflowError`
+
+```typescript
+
+try {
+  await executeWorkflow(workflow, inputs, basePath);
+} catch (err) {
+  if (err instanceof WorkflowError) {
+    console.error(`Step "${err.stepName}" failed after ${err.retriesAttempted} retries`);
+    console.error(`Strategy: ${err.strategy}`);
+  }
+}
+```
+
+```typescript
+class WorkflowError extends Error {
+  stepName:         string;        // Name of the step that failed
+  strategy:         ErrorStrategy; // Error strategy applied ("fail", "skip", "retry")
+  retriesAttempted: number;        // Number of retry attempts made
+}
+```
+
+Steps configured with `onError: skip` do not throw — they appear in `result.steps` with `status: "skipped"` and execution continues.
+
+---
+
+## Using an event hub
+
+Inject a hub via `ExecuteOptions` to enable `emit` and `wait.event` steps. The same hub instance is automatically propagated to all sub-workflows, loops, and parallel branches.
+
+```typescript
+
+const hub = new MemoryHub();
+
+const result = await executeWorkflow(workflow, inputs, basePath, { hub });
+
+await hub.close(); // Always close when done
+```
+
+For distributed use cases, see [Event hub providers](/runtime/event-hub-providers/) for NATS and Redis backends.
+
+### Sub-workflow event propagation
+
+Because the hub is shared across the entire execution tree, a parent workflow can `wait` for an event emitted by a child:
+
+```yaml
+# parent.yaml
+flow:
+  - call: child.yaml
+  - wait:
+      event: child.done
+      timeout: 10s
+output: event.result
+```
+
+```yaml
+# child.yaml
+flow:
+  - type: emit
+    event: child.done
+    payload:
+      result: '"from child"'
+```
+
+```typescript
+const hub = new MemoryHub();
+const result = await runWorkflowFromFile("parent.yaml", {}, { hub });
+// result.output === "from child"
+await hub.close();
+```
+
+---
+
+## Implementing a custom event hub
+
+You can implement your own backend — for example, backed by Kafka, an in-house message broker, or a mock for testing — by implementing the `EventHub` interface.
+
+### The interface
+
+```typescript
+
+interface EventHub {
+  publish(event: string, payload: unknown): Promise<void>;
+  publishAndWaitAck(event: string, payload: unknown, timeoutMs: number): Promise<void>;
+  subscribe(event: string, signal?: AbortSignal): AsyncIterable<EventEnvelope>;
+  close(): Promise<void>;
+}
+
+interface EventEnvelope {
+  name:    string;   // Event name
+  payload: unknown;  // Event payload (any JSON-serializable value)
+}
+```
+
+### Contract
+
+| Method | Required behavior |
+|--------|------------------|
+| `publish` | Deliver `payload` to all active subscribers of `event`. Fire-and-forget. |
+| `publishAndWaitAck` | Same as `publish`, but wait for broker acknowledgment up to `timeoutMs` ms before resolving. Throw on timeout. |
+| `subscribe` | Return an `AsyncIterable` that yields `EventEnvelope` objects as they arrive. Stop yielding when `signal` is aborted or `close()` is called. |
+| `close` | Release all connections and internal resources. Stop any active subscribers. |
+
+<Aside type="tip">
+  If your backend does not have a native ack mechanism, implement `publishAndWaitAck` as an alias for `publish` — that is exactly what `MemoryHub` does.
+</Aside>
+
+### Minimal example
+
+```typescript
+
+type Listener = (envelope: EventEnvelope) => void;
+
+export class MyCustomHub implements EventHub {
+  private listeners = new Map<string, Set<Listener>>();
+  private closed = false;
+
+  async publish(event: string, payload: unknown): Promise<void> {
+    if (this.closed) throw new Error("hub is closed");
+    const envelope: EventEnvelope = { name: event, payload };
+    for (const listener of this.listeners.get(event) ?? []) {
+      listener(envelope);
+    }
+  }
+
+  async publishAndWaitAck(event: string, payload: unknown, _timeoutMs: number): Promise<void> {
+    await this.publish(event, payload); // no ack in this backend
+  }
+
+  async *subscribe(event: string, signal?: AbortSignal): AsyncIterable<EventEnvelope> {
+    if (this.closed) return;
+
+    const queue: EventEnvelope[] = [];
+    let resolve: (() => void) | null = null;
+
+    const listener: Listener = (envelope) => {
+      queue.push(envelope);
+      resolve?.();
+      resolve = null;
+    };
+
+    if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+    this.listeners.get(event)!.add(listener);
+
+    const cleanup = () => {
+      this.listeners.get(event)?.delete(listener);
+      resolve?.();
+    };
+
+    signal?.addEventListener("abort", cleanup);
+
+    try {
+      while (!this.closed && !signal?.aborted) {
+        if (queue.length > 0) {
+          yield queue.shift()!;
+        } else {
+          await new Promise<void>((r) => { resolve = r; });
+        }
+      }
+    } finally {
+      cleanup();
+      signal?.removeEventListener("abort", cleanup);
+    }
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.listeners.clear();
+  }
+}
+```
+
+### Using your custom hub
+
+```typescript
+
+
+const hub = new MyCustomHub();
+const result = await executeWorkflow(workflow, inputs, basePath, { hub });
+await hub.close();
+```
+
+No other changes are needed — the runtime treats all `EventHub` implementations identically.
+
+### Testing tip
+
+A custom hub is also useful for asserting that specific events were emitted during a test:
+
+```typescript
+class CapturingHub extends MyCustomHub {
+  readonly emitted: { event: string; payload: unknown }[] = [];
+
+  override async publish(event: string, payload: unknown): Promise<void> {
+    this.emitted.push({ event, payload });
+    await super.publish(event, payload);
+  }
+}
+
+const hub = new CapturingHub();
+await executeWorkflow(workflow, inputs, basePath, { hub });
+
+expect(hub.emitted).toContainEqual({
+  event: "order.created",
+  payload: expect.objectContaining({ orderId: "123" }),
+});
+
+await hub.close();
+```

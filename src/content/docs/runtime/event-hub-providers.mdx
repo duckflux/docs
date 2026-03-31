@@ -1,0 +1,282 @@
+---
+title: Event hub providers
+description: How to connect the runtime to event hubs and channels.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+DuckFlux supports three event hub backends for [`emit`](/workflows/events/) and [`wait`](/workflows/events/#waiting-for-events) steps. All three implement the same `EventHub` interface — you can swap backends without changing your workflow YAML.
+
+| Backend | Package | Infrastructure | Replay | Cross-process |
+|---------|---------|---------------|--------|--------------|
+| In-memory | `@duckflux/core` (built-in) | None | Yes | No |
+| NATS JetStream | `@duckflux/hub-nats` | NATS server | No | Yes |
+| Redis Streams | `@duckflux/hub-redis` | Redis server | Yes | Yes |
+
+<Aside type="tip">
+  The `memory` backend requires no external services and is the right default for local development and single-process workflows. Use `nats` or `redis` when you need events to cross process or machine boundaries.
+</Aside>
+
+---
+
+## `EventHub` interface
+
+All backends implement this interface:
+
+```typescript
+interface EventHub {
+  publish(event: string, payload: unknown): Promise<void>;
+  publishAndWaitAck(event: string, payload: unknown, timeoutMs: number): Promise<void>;
+  subscribe(event: string, signal?: AbortSignal): AsyncIterable<EventEnvelope>;
+  close(): Promise<void>;
+}
+
+interface EventEnvelope {
+  name: string;
+  payload: unknown;
+}
+```
+
+The hub is optional — you only need one if your workflow uses `emit` or `wait.event` steps. When absent, those steps will throw at runtime.
+
+---
+
+## Backends
+
+<Tabs>
+  <TabItem label="Memory">
+    The default backend. Events are held in-process; no external infrastructure needed.
+
+    **Characteristics:**
+    - Replay: subscribers that connect **after** `publish` still receive the event — the hub buffers all events until `close()`.
+    - Fan-out: multiple `subscribe()` calls on the same event each receive every message independently.
+    - Single-process only: events do not cross process boundaries.
+
+    #### Library usage
+
+    ```typescript
+    import { MemoryHub, executeWorkflow } from "@duckflux/core";
+
+    const hub = new MemoryHub();
+    const result = await executeWorkflow(workflow, inputs, basePath, { hub });
+    await hub.close();
+    ```
+
+    #### CLI usage
+
+    ```bash
+    duckflux run workflow.yaml
+    # --event-backend defaults to "memory", no flag required
+
+    duckflux run workflow.yaml --event-backend=memory
+    ```
+  </TabItem>
+
+  <TabItem label="NATS">
+    Uses [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) for distributed event delivery.
+
+    **Characteristics:**
+    - No replay: subscribers only receive events published **after** they subscribe (ephemeral ordered consumers).
+    - Fan-out: each `NatsHub` instance gets an independent consumer — multiple instances on the same server each receive every message.
+    - Stream names: NATS JetStream does not allow dots in stream names, so duckflux replaces dots with underscores internally (`order.payment.done` → stream `order_payment_done`). Subjects keep their original dot notation.
+
+    #### Installation
+
+    ```bash
+    # Bun
+    bun add @duckflux/hub-nats
+
+    # npm
+    npm install @duckflux/hub-nats
+    ```
+
+    #### Library usage
+
+    ```typescript
+    import { NatsHub } from "@duckflux/hub-nats";
+    import { executeWorkflow } from "@duckflux/core";
+
+    const hub = await NatsHub.create({
+      url: "nats://localhost:4222",
+      stream: "duckflux-events", // optional — defaults to the topic name
+    });
+
+    const result = await executeWorkflow(workflow, inputs, basePath, { hub });
+    await hub.close();
+    ```
+
+    #### CLI usage
+
+    ```bash
+    duckflux run workflow.yaml \
+      --event-backend=nats \
+      --nats-url=nats://localhost:4222
+
+    # With a custom stream name
+    duckflux run workflow.yaml \
+      --event-backend=nats \
+      --nats-url=nats://localhost:4222 \
+      --nats-stream=my-stream
+    ```
+
+    #### Configuration reference
+
+    | Option | CLI flag | Type | Default | Description |
+    |--------|----------|------|---------|-------------|
+    | `url` | `--nats-url` | string | — | NATS server URL. **Required.** |
+    | `stream` | `--nats-stream` | string | `duckflux-events` | JetStream stream name. |
+
+    <Aside type="caution">
+      `--nats-url` is required when `--event-backend=nats`. The CLI exits with code `1` if it is omitted.
+    </Aside>
+
+    #### Running a local NATS server
+
+    ```bash
+    # Docker
+    docker run -p 4222:4222 nats:latest -js
+
+    # Or with nats-server installed
+    nats-server -js
+    ```
+  </TabItem>
+
+  <TabItem label="Redis">
+    Uses [Redis Streams](https://redis.io/docs/data-types/streams/) (`XADD` / `XREADGROUP`) for persistent, distributed event delivery.
+
+    **Characteristics:**
+    - Replay: the hub reads from stream position `0`, so subscribers receive events published before they connected.
+    - Fan-out: hubs with **different** `consumerGroup` names each receive all messages independently. Hubs with the same consumer group share the load (competing consumers).
+    - Persistence: messages remain in the Redis stream after consumption and can be re-read by new consumer groups.
+
+    #### Installation
+
+    ```bash
+    # Bun
+    bun add @duckflux/hub-redis
+
+    # npm
+    npm install @duckflux/hub-redis
+    ```
+
+    #### Library usage
+
+    ```typescript
+    import { RedisHub } from "@duckflux/hub-redis";
+    import { executeWorkflow } from "@duckflux/core";
+
+    const hub = await RedisHub.create({
+      addr: "localhost:6379",  // optional — this is the default
+      db: 0,                   // optional — this is the default
+      consumerGroup: "my-app", // optional — defaults to "duckflux"
+    });
+
+    const result = await executeWorkflow(workflow, inputs, basePath, { hub });
+    await hub.close();
+    ```
+
+    #### CLI usage
+
+    ```bash
+    duckflux run workflow.yaml \
+      --event-backend=redis \
+      --redis-addr=localhost:6379
+
+    # With custom options
+    duckflux run workflow.yaml \
+      --event-backend=redis \
+      --redis-addr=redis.internal:6379 \
+      --redis-db=2
+    ```
+
+    #### Configuration reference
+
+    | Option | CLI flag | Type | Default | Description |
+    |--------|----------|------|---------|-------------|
+    | `addr` | `--redis-addr` | string | `localhost:6379` | Redis server address (`host:port`). |
+    | `db` | `--redis-db` | number | `0` | Redis database number. |
+    | `consumerGroup` | — | string | `duckflux` | Consumer group name. Different groups = independent fan-out. |
+
+    <Aside type="note">
+      The `consumerGroup` option is only available in library mode. The CLI always uses the default group name `duckflux`.
+    </Aside>
+
+    #### Running a local Redis server
+
+    ```bash
+    # Docker
+    docker run -p 6379:6379 redis:latest
+
+    # Or with redis-server installed
+    redis-server
+    ```
+  </TabItem>
+
+  <TabItem label="Custom">
+    You can implement your own backend by satisfying the `EventHub` interface from `@duckflux/core` — for example, to integrate with Kafka, an in-house broker, or a test double.
+
+    See [Implementing a custom event hub](/runtime/library/#implementing-a-custom-event-hub) for the full interface contract, a minimal working implementation, and a testing pattern.
+  </TabItem>
+</Tabs>
+
+---
+
+## Passing a hub in library mode
+
+The hub is injected via `ExecuteOptions` and propagated automatically through the entire execution — including sub-workflows, loops, parallel branches, and conditionals.
+
+```typescript
+import { executeWorkflow } from "@duckflux/core";
+
+const result = await executeWorkflow(
+  workflow,
+  inputs,
+  basePath,
+  { hub }, // <-- inject here
+);
+```
+
+Always call `hub.close()` when execution is complete to release connections and internal buffers.
+
+### Sub-workflows
+
+When a workflow calls a sub-workflow, the same hub instance is passed down. This means a parent can `wait` for an event emitted by a child:
+
+```yaml
+# parent.yaml
+flow:
+  - call: child.yaml
+  - wait:
+      event: child.done
+      timeout: 10s
+output: event.result
+```
+
+```yaml
+# child.yaml
+flow:
+  - type: emit
+    event: child.done
+    payload:
+      result: '"hello from child"'
+```
+
+```typescript
+const hub = new MemoryHub();
+const result = await executeWorkflow(parentWorkflow, {}, basePath, { hub });
+// result.output === "hello from child"
+await hub.close();
+```
+
+---
+
+## Choosing a backend
+
+| Scenario | Recommended backend |
+|----------|-------------------|
+| Local development, single process | `memory` |
+| Multiple processes on the same machine | `redis` (simple) or `nats` |
+| Distributed systems, microservices | `nats` or `redis` |
+| Need event replay for late subscribers | `memory` or `redis` |
+| Low-latency, high-throughput messaging | `nats` |
+| Events must survive process restarts | `redis` |

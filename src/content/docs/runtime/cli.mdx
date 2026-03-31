@@ -1,0 +1,332 @@
+---
+title: CLI Usage
+description: How to use the DuckFlux CLI to run workflows.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+The `@duckflux/runner` package ships a `duckflux` binary that lets you run, lint, and validate workflows from the command line.
+
+```bash
+duckflux <command> <workflow.yaml> [flags]
+```
+
+---
+
+## Installation
+
+<Tabs>
+  <TabItem label="No install">
+    Run without installing — always uses the latest published version.
+
+    ```bash
+    # Node.js
+    npx duckflux run workflow.yaml
+
+    # Bun
+    bunx duckflux run workflow.yaml
+    ```
+  </TabItem>
+
+  <TabItem label="macOS (brew)">
+    Install via [Homebrew](https://brew.sh):
+
+    ```bash
+    brew install duckflux/tap/duckflux-js
+    ```
+  </TabItem>
+
+  <TabItem label="Linux (apt)">
+    Install via apt:
+
+    ```bash
+    ```
+  </TabItem>
+
+  <TabItem label="Generic (npm/Bun)">
+    Install globally so `duckflux` is available everywhere on your machine.
+
+    ```bash
+    # npm
+    npm install -g duckflux
+
+    # Bun
+    bun add -g duckflux
+    ```
+
+    Verify:
+
+    ```bash
+    duckflux version
+    ```
+  </TabItem>
+
+  <TabItem label="Others">
+    Download a self-contained binary (no Node.js or Bun required) from the [GitHub Releases page](https://github.com/duckflux/runtime-js/releases/latest).
+
+    | Platform | File |
+    |---|---|
+    | macOS ARM64 (Apple Silicon) | `duckflux-darwin-arm64` |
+    | macOS x64 (Intel) | `duckflux-darwin-x64` |
+    | Linux x64 | `duckflux-linux-x64` |
+    | Linux ARM64 | `duckflux-linux-arm64` |
+    | Windows x64 | `duckflux-windows-x64.exe` |
+
+    **macOS / Linux:**
+
+    ```bash
+    # Example for macOS ARM64 — replace the filename for your platform
+    curl -fsSL https://github.com/duckflux/runtime-js/releases/latest/download/duckflux-darwin-arm64 \
+      -o /usr/local/bin/duckflux
+    chmod +x /usr/local/bin/duckflux
+    duckflux version
+    ```
+
+    **Windows:** download the `.exe`, place it somewhere on your `%PATH%`, and run it directly.
+  </TabItem>
+</Tabs>
+
+---
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| [`run`](#run) | Execute a workflow |
+| [`lint`](#lint) | Validate schema and detect common issues (no execution) |
+| [`validate`](#validate) | Full validation including input schema |
+| [`version`](#version) | Print the CLI version |
+
+---
+
+## `run`
+
+Executes a workflow from a YAML file and prints the result to `stdout`.
+
+```bash
+duckflux run <workflow.yaml> [flags]
+```
+
+`run` is the default command — if the first positional argument is a `.yaml` file and no subcommand is given, it is implied:
+
+```bash
+duckflux workflow.yaml   # same as: duckflux run workflow.yaml
+```
+
+### Flags
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--input` | `-i` | string | — | Input as `key=value`. Repeatable. Values are JSON-parsed, falling back to strings. |
+| `--input-file` | — | string | — | Path to a JSON file containing workflow inputs. |
+| `--cwd` | — | string | — | Working directory used for `exec` participants. |
+| `--event-backend` | — | string | `memory` | Event hub backend: `memory`, `nats`, or `redis`. |
+| `--nats-url` | — | string | — | NATS server URL. Required when `--event-backend=nats`. |
+| `--nats-stream` | — | string | `duckflux-events` | JetStream stream name. |
+| `--redis-addr` | — | string | `localhost:6379` | Redis server address (`host:port`). |
+| `--redis-db` | — | string | `0` | Redis database number. |
+| `--verbose` | `-v` | boolean | `false` | Print error stack traces to `stderr`. |
+| `--quiet` | — | boolean | `false` | Suppress `stdout` output. |
+
+### Input sources
+
+Inputs are merged from multiple sources. Higher entries take priority:
+
+1. `--input` flags (highest)
+2. `--input-file` contents
+3. JSON piped via `stdin` (when no other input source is provided)
+
+### `--input` value parsing
+
+Values are JSON-parsed first, falling back to plain strings:
+
+```bash
+--input name=World        # {name: "World"}
+--input count=3           # {count: 3}
+--input active=true       # {active: true}
+--input data='{"x":1}'    # {data: {x: 1}}
+--input items='[1,2,3]'   # {items: [1, 2, 3]}
+--input flag              # {flag: true}  (no "=" → boolean true)
+```
+
+### Output
+
+- `string` output → printed as-is (no trailing newline added)
+- Object/array output → printed as formatted JSON (2-space indent)
+- `null` / `undefined` output → nothing printed
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Workflow succeeded |
+| `1` | Execution error (file not found, parse error, unhandled exception) |
+| `2` | Workflow ran but returned `success: false` |
+
+### Examples
+
+```bash
+# Basic execution
+duckflux run workflow.yaml
+
+# Pass inputs
+duckflux run workflow.yaml --input name=World --input count=3
+
+# Inputs from file
+duckflux run workflow.yaml --input-file inputs.json
+
+# Piped inputs
+cat inputs.json | duckflux run workflow.yaml
+
+# Custom working directory with verbose errors
+duckflux run workflow.yaml --cwd /workspace --verbose
+
+# NATS event backend
+duckflux run workflow.yaml \
+  --event-backend=nats \
+  --nats-url=nats://localhost:4222
+
+# Redis event backend
+duckflux run workflow.yaml \
+  --event-backend=redis \
+  --redis-addr=localhost:6379
+```
+
+---
+
+## `lint`
+
+Validates a workflow file without executing it. Checks schema correctness, semantic consistency, and common authoring issues.
+
+```bash
+duckflux lint <workflow.yaml>
+```
+
+### Checks performed
+
+1. **Schema validation** — the file must conform to the duckflux JSON schema.
+2. **Semantic validation** — participant references, variable bindings, and imports are verified.
+3. **Lint warnings** (non-blocking) — the following patterns are flagged:
+   - Loops without both `until` and `max` conditions (infinite-loop risk)
+   - Parallel branches writing to the same context variable (race condition risk)
+   - Inline participants without an `as` name (output unreachable by name)
+
+If all checks pass, `valid` is printed to `stdout`. Errors and warnings go to `stderr`.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Workflow is valid |
+| `1` | Validation failed or file could not be read |
+
+### Example
+
+```bash
+duckflux lint workflow.yaml
+
+# CI-friendly: capture all output
+duckflux lint workflow.yaml 2>&1
+
+# Check exit code
+if duckflux lint workflow.yaml; then
+  echo "Ready to run"
+fi
+```
+
+---
+
+## `validate`
+
+Performs the same checks as [`lint`](#lint), and additionally validates provided inputs against the workflow's declared `inputs` schema.
+
+```bash
+duckflux validate <workflow.yaml> [flags]
+```
+
+### Flags
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--input` | `-i` | string | — | Input as `key=value`. Repeatable. |
+| `--input-file` | — | string | — | Path to a JSON file containing inputs. |
+
+`stdin` is also accepted (same rules as `run`).
+
+### Checks performed
+
+1. Schema validation
+2. Semantic validation
+3. **Input schema validation** — types, `enum`, `min`, `max`, `pattern`, `format`, and required fields are all checked against the values you provide.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All validations passed |
+| `1` | Validation failed |
+
+### Examples
+
+```bash
+# Validate structure only
+duckflux validate workflow.yaml
+
+# Validate structure + inputs
+duckflux validate workflow.yaml --input name=World --input count=3
+
+# Inputs from file
+duckflux validate workflow.yaml --input-file test-inputs.json
+
+# Piped inputs
+echo '{"name":"World"}' | duckflux validate workflow.yaml
+```
+
+---
+
+## `version`
+
+Prints the CLI version to `stdout`.
+
+```bash
+duckflux version
+# 0.6.0
+```
+
+Always exits with code `0`.
+
+---
+
+## Event hub backends
+
+The `--event-backend` flag (used with `run`) selects the pub/sub layer for [`emit`](/workflows/events/) and [`wait`](/workflows/events/#waiting-for-events) participants.
+
+| Backend | Flag value | Infrastructure | Replay | Cross-process |
+|---------|-----------|---------------|--------|--------------|
+| In-memory | `memory` (default) | None | Yes | No |
+| NATS JetStream | `nats` | NATS server | No | Yes |
+| Redis Streams | `redis` | Redis server | Yes | Yes |
+
+<Aside type="tip">
+  The default `memory` backend requires no external services and supports in-process replay. Switch to `nats` or `redis` when you need cross-process event delivery.
+</Aside>
+
+For detailed configuration of each backend see [Event hub providers](/runtime/event-hub-providers/).
+
+---
+
+## Error handling
+
+**Unknown command** — prints available commands and exits with code `1`.
+
+**Missing file argument** — prints the command's usage string to `stderr` and exits with code `1`.
+
+**Backend not installed** — if `@duckflux/hub-nats` or `@duckflux/hub-redis` is missing, the CLI prints an installation hint and exits with code `1`:
+
+```
+Error: NATS backend requires @duckflux/hub-nats — install it with: bun add @duckflux/hub-nats
+```
+
+**`--nats-url` missing** — required when `--event-backend=nats`; exits with code `1` if omitted.
+
+**`--verbose` / `-v`** — appends the full stack trace to `stderr` for any error, regardless of command.
