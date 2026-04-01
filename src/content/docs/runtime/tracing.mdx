@@ -1,0 +1,293 @@
+---
+title: Execution tracing
+description: Capture structured execution records for every workflow run — JSON, TXT, or SQLite.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Execution tracing writes a structured record of every workflow run to disk. Each execution produces **one file**, named after the execution ID, in a directory you choose.
+
+Tracing is incremental: each step is written to the file as it completes, not at the end of the workflow. This means you can inspect a trace while a long-running workflow is still executing.
+
+---
+
+## Quick start
+
+```bash
+# JSON trace (default)
+duckflux run workflow.yaml --trace-dir ./traces
+
+# TXT trace — human-readable sections
+duckflux run workflow.yaml --trace-dir ./traces --trace-format txt
+
+# SQLite trace — queryable with any SQL client
+duckflux run workflow.yaml --trace-dir ./traces --trace-format sqlite
+```
+
+Output files are named `<executionId>.<ext>`:
+
+```
+traces/
+  550e8400-e29b-41d4-a716-446655440000.json
+  7c9e6679-7425-40de-944b-e07fc1f90ae7.json
+```
+
+---
+
+## Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--trace-dir` | string | — | Directory to write trace files. Created automatically if it does not exist. |
+| `--trace-format` | string | `json` | Output format: `json`, `txt`, or `sqlite`. |
+
+<Aside type="tip">
+  `--trace-dir` is the only required flag. `--trace-format` defaults to `json`.
+</Aside>
+
+---
+
+## What is traced
+
+Every step in the workflow produces a trace entry — not just participant steps, but also all control-flow constructs:
+
+| Step type | Traced as |
+|-----------|-----------|
+| `exec`, `http`, `workflow`, `emit` | participant type (`exec`, `http`, etc.) |
+| `loop` | `loop` — one entry for the entire loop block |
+| `parallel` | `parallel` — one entry for the entire parallel block |
+| `if` / `else` | `if` — one entry per conditional block |
+| `set` | `set` |
+| `wait` | `wait` |
+
+Each trace entry includes:
+
+| Field | Description |
+|-------|-------------|
+| `seq` | Execution order (1-based, unique per run) |
+| `name` | Step name or construct type |
+| `type` | Participant or construct type |
+| `startedAt` | ISO timestamp |
+| `finishedAt` | ISO timestamp |
+| `duration` | Duration in milliseconds |
+| `status` | `success`, `failure`, or `skipped` |
+| `input` | Resolved input passed to the step |
+| `output` | Output produced by the step |
+| `error` | Error message, if the step failed |
+| `retries` | Number of retry attempts (if `onError: retry`) |
+| `loopIndex` | Current loop iteration index (when inside a loop) |
+
+### Truncation
+
+`input` and `output` fields are truncated at **1 MB** across all formats. Truncated values end with `...[truncated]`. Metadata fields (timestamps, durations, status) are never truncated.
+
+---
+
+## Formats
+
+<Tabs>
+  <TabItem label="JSON">
+
+A single JSON document written incrementally. The file is always valid JSON — it is rewritten after each step completes.
+
+```json
+{
+  "execution": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "workflowName": "fetch-and-process",
+    "workflowVersion": "1.0",
+    "startedAt": "2026-03-31T10:00:00.000Z",
+    "finishedAt": "2026-03-31T10:00:01.234Z",
+    "duration": 1234,
+    "status": "success",
+    "inputs": { "url": "https://api.example.com/data" },
+    "output": { "count": 42 }
+  },
+  "steps": [
+    {
+      "seq": 1,
+      "name": "fetch",
+      "type": "http",
+      "startedAt": "2026-03-31T10:00:00.100Z",
+      "finishedAt": "2026-03-31T10:00:00.820Z",
+      "duration": 720,
+      "status": "success",
+      "input": { "url": "https://api.example.com/data" },
+      "output": "[{\"id\":1},{\"id\":2}]"
+    },
+    {
+      "seq": 2,
+      "name": "process",
+      "type": "exec",
+      "startedAt": "2026-03-31T10:00:00.825Z",
+      "finishedAt": "2026-03-31T10:00:01.230Z",
+      "duration": 405,
+      "status": "success",
+      "input": "[{\"id\":1},{\"id\":2}]",
+      "output": "42"
+    }
+  ]
+}
+```
+
+  </TabItem>
+  <TabItem label="TXT">
+
+A human-readable file with named sections. The header is written at start; step sections are appended as each step completes; the `# output` section is appended at the end.
+
+```
+# execution
+id: 550e8400-e29b-41d4-a716-446655440000
+workflow: fetch-and-process (v1.0)
+startedAt: 2026-03-31T10:00:00.000Z
+status: success
+finishedAt: 2026-03-31T10:00:01.234Z
+duration: 1234ms
+
+# inputs
+{
+  "url": "https://api.example.com/data"
+}
+
+# steps
+
+## [1] fetch (http)
+startedAt: 2026-03-31T10:00:00.100Z
+finishedAt: 2026-03-31T10:00:00.820Z
+duration: 720ms
+status: success
+input: {"url":"https://api.example.com/data"}
+output: [{"id":1},{"id":2}]
+
+## [2] process (exec)
+startedAt: 2026-03-31T10:00:00.825Z
+finishedAt: 2026-03-31T10:00:01.230Z
+duration: 405ms
+status: success
+input: [{"id":1},{"id":2}]
+output: 42
+
+# output
+{
+  "count": 42
+}
+```
+
+  </TabItem>
+  <TabItem label="SQLite">
+
+A SQLite database with two tables: `executions` and `steps`. Each step is inserted as it completes. The execution row is inserted at start with `status = 'running'` and updated at the end.
+
+**`executions` table**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | Execution UUID |
+| `workflow_id` | TEXT | `workflow.id` field |
+| `workflow_name` | TEXT | `workflow.name` field |
+| `workflow_version` | TEXT | `workflow.version` field |
+| `started_at` | TEXT | ISO timestamp |
+| `finished_at` | TEXT | ISO timestamp (NULL while running) |
+| `duration_ms` | INTEGER | Total duration in ms (NULL while running) |
+| `status` | TEXT | `running` → `success` or `failure` |
+| `inputs` | TEXT | JSON (truncated at 1 MB) |
+| `output` | TEXT | JSON (truncated at 1 MB, NULL while running) |
+
+**`steps` table**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PK | Auto-increment |
+| `execution_id` | TEXT | FK → `executions.id` |
+| `seq` | INTEGER | Execution order |
+| `name` | TEXT | Step name |
+| `type` | TEXT | Step type |
+| `started_at` | TEXT | ISO timestamp |
+| `finished_at` | TEXT | ISO timestamp |
+| `duration_ms` | INTEGER | Duration in ms |
+| `status` | TEXT | `success`, `failure`, or `skipped` |
+| `input` | TEXT | JSON (truncated at 1 MB) |
+| `output` | TEXT | JSON (truncated at 1 MB) |
+| `error` | TEXT | Error message |
+| `retries` | INTEGER | Retry count |
+| `loop_index` | INTEGER | Loop iteration index |
+
+**Example queries**
+
+```sql
+-- All failed steps across all executions
+SELECT e.workflow_name, s.name, s.error
+FROM steps s JOIN executions e ON s.execution_id = e.id
+WHERE s.status = 'failure';
+
+-- Slowest steps in a given execution
+SELECT name, type, duration_ms
+FROM steps
+WHERE execution_id = '550e8400-e29b-41d4-a716-446655440000'
+ORDER BY duration_ms DESC;
+
+-- All loop iterations for a step
+SELECT seq, name, loop_index, duration_ms, status
+FROM steps
+WHERE execution_id = '...' AND name = 'fetchItem'
+ORDER BY loop_index;
+```
+
+  </TabItem>
+</Tabs>
+
+---
+
+## Tracing with loops
+
+When a participant runs inside a `loop`, each iteration produces its own trace entry with the same `name` but a different `seq` and `loopIndex`:
+
+```json
+{ "seq": 3, "name": "fetchItem", "type": "exec", "loopIndex": 0, "duration": 82, "status": "success" },
+{ "seq": 4, "name": "fetchItem", "type": "exec", "loopIndex": 1, "duration": 75, "status": "success" },
+{ "seq": 5, "name": "fetchItem", "type": "exec", "loopIndex": 2, "duration": 91, "status": "success" }
+```
+
+The `loop` construct itself also appears as its own entry (type `loop`), wrapping all iterations:
+
+```json
+{ "seq": 2, "name": "loop", "type": "loop", "duration": 260, "status": "success" }
+```
+
+---
+
+## Tracing failed workflows
+
+A trace is always written, even when the workflow fails. Failed steps have `status: "failure"` and an `error` field:
+
+```json
+{
+  "seq": 2,
+  "name": "callApi",
+  "type": "http",
+  "status": "failure",
+  "error": "HTTP 503: Service Unavailable",
+  "duration": 5003
+}
+```
+
+The `execution.status` in the trace header is `"failure"` when any step failed.
+
+---
+
+## Library usage
+
+When using `@duckflux/core` directly, pass `traceDir` and `traceFormat` to `executeWorkflow`:
+
+```typescript
+import { executeWorkflow } from "@duckflux/core/engine";
+
+const result = await executeWorkflow(workflow, inputs, basePath, {
+  traceDir: "./traces",
+  traceFormat: "json",   // "json" | "txt" | "sqlite"
+});
+```
+
+<Aside type="note">
+  Tracing is only active on the root workflow. Sub-workflow steps are captured as `workflow`-type entries in the parent trace — sub-workflows do not produce their own separate trace files.
+</Aside>

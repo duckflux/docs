@@ -125,6 +125,8 @@ duckflux workflow.yaml   # same as: duckflux run workflow.yaml
 | `--nats-stream` | — | string | `duckflux-events` | JetStream stream name. |
 | `--redis-addr` | — | string | `localhost:6379` | Redis server address (`host:port`). |
 | `--redis-db` | — | string | `0` | Redis database number. |
+| `--trace-dir` | — | string | — | Directory to write execution trace files. One file per run, named `<executionId>.<ext>`. |
+| `--trace-format` | — | string | `json` | Trace output format: `json`, `txt`, or `sqlite`. |
 | `--verbose` | `-v` | boolean | `false` | Print error stack traces to `stderr`. |
 | `--quiet` | — | boolean | `false` | Suppress `stdout` output. |
 
@@ -190,7 +192,17 @@ duckflux run workflow.yaml \
 duckflux run workflow.yaml \
   --event-backend=redis \
   --redis-addr=localhost:6379
+
+# Write a JSON trace for each run
+duckflux run workflow.yaml --trace-dir ./traces
+
+# Write a SQLite trace (all runs in separate DB files)
+duckflux run workflow.yaml --trace-dir ./traces --trace-format sqlite
 ```
+
+### Tracing
+
+Use `--trace-dir` to capture a structured execution record for each run. See [Execution tracing](/runtime/tracing/) for full details.
 
 ---
 

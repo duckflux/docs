@@ -70,6 +70,7 @@ export default defineConfig({
 					items: [
 						{ label: "Runtime overview", slug: 'runtime/overview' },
 						{ label: 'CLI usage', slug: 'runtime/cli' },
+						{ label: 'Execution tracing', slug: 'runtime/tracing' },
 						{ label: 'Event hub providers', slug: 'runtime/event-hub-providers' },
 						{ label: 'Library usage', slug: 'runtime/library' }
 					],
