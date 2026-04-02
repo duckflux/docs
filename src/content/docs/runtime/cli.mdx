@@ -95,6 +95,7 @@ duckflux <command> <workflow.yaml> [flags]
 | [`run`](#run) | Execute a workflow |
 | [`lint`](#lint) | Validate schema and detect common issues (no execution) |
 | [`validate`](#validate) | Full validation including input schema |
+| [`server`](#server) | Start the web server UI for visual workflow observation |
 | [`version`](#version) | Print the CLI version |
 
 ---
@@ -293,6 +294,48 @@ duckflux validate workflow.yaml --input-file test-inputs.json
 # Piped inputs
 echo '{"name":"World"}' | duckflux validate workflow.yaml
 ```
+
+---
+
+## `server`
+
+Starts the duckflux web server UI — a local dev tool for executing and observing workflows visually. See [Web Server UI](/tooling/web-server-ui/) for a full feature walkthrough with screenshots.
+
+```bash
+duckflux server [flags]
+```
+
+### Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--trace-dir` | string | — | **Required.** Directory to watch for execution trace JSON files. |
+| `--workflow-dir` | string | cwd | Directory to scan for `.yaml` / `.yml` workflow files. |
+| `--port` | string | `3000` | HTTP port for the web UI. |
+
+### Auto-install
+
+If `@duckflux/server` is not installed in the current project, the CLI prompts to install it automatically:
+
+```
+@duckflux/server is not installed. Install it now? [Y/n]
+```
+
+Answering **Y** runs `bun add @duckflux/server -D` (falling back to `npm install` if Bun is not available).
+
+### Examples
+
+```bash
+# Start with trace output directory
+duckflux server --trace-dir ./traces
+
+# Custom workflow directory and port
+duckflux server --trace-dir ./traces --workflow-dir ./workflows --port 8080
+```
+
+<Aside type="tip">
+  The server watches `--trace-dir` for new or updated trace files in real time. Run workflows via the UI's execute button or from the CLI in another terminal — both feed into the same trace directory.
+</Aside>
 
 ---
 
