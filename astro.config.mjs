@@ -81,6 +81,13 @@ export default defineConfig({
 					autogenerate: { directory: 'tooling' },
 				},
 				{
+					label: 'Migrating',
+					collapsed: true,
+					items: [
+						{ label: 'From Ralph Loops', slug: 'migrating/from-ralph' },
+					],
+				},
+				{
 					label: 'About',
 					collapsed: true,
 					items: [
