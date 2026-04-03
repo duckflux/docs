@@ -4043,270 +4043,6 @@ This is equivalent to setting `defaults.cwd` in the workflow file itself, but ap
 
 ---
 
-# Introduction
-> Introdução ao Runner CLI.
-
-
-Resumo do propósito do Runner e arquitetura básica.
-
----
-
-# Installation
-> Como instalar o Runner CLI.
-
-
-Passos para instalar o Runner no seu sistema.
-
----
-
-# Running workflows
-> Executando workflows com o Runner CLI.
-
-
-Instruções para executar workflows localmente e em produção.
-
----
-
-# Linting/validation
-> Ferramentas de lint/validação para workflows.
-
-
-Como validar seus arquivos de workflow antes da execução.
-
----
-
-# Event hubs
-> Configure and use event hub backends in the duckflux Runner CLI — memory, NATS JetStream, and Redis Streams.
-
-
-The event hub is the pub/sub layer that connects [`emit`](/workflows/events/) participants to [`wait`](/workflows/events/#waiting-for-events) steps. The Runner CLI supports three interchangeable backends — you choose one via the `--event-backend` flag. All backends expose the same semantics; they differ in infrastructure requirements and delivery guarantees.
-
----
-
-## Backends at a glance
-
-| Backend | Flag value | Infrastructure | Replay (subscribe after publish) | Fan-out |
-|---------|-----------|---------------|----------------------------------|---------|
-| In-memory | `memory` (default) | None | Yes | Yes |
-| NATS JetStream | `nats` | NATS server | No (ephemeral consumers start at latest offset) | Yes |
-| Redis Streams | `redis` | Redis server | Yes (consumer group reads from stream start) | Yes |
-
-<Aside type="tip">
-  Start with the default `memory` backend — it requires no external services and is sufficient for single-process workflows. Switch to NATS or Redis when you need cross-process event delivery or durable persistence.
-</Aside>
-
----
-
-## CLI flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--event-backend` | string | `memory` | Backend selection: `memory`, `nats`, or `redis`. |
-| `--nats-url` | string | — | NATS server URL. **Required** when `--event-backend=nats`. |
-| `--nats-stream` | string | `duckflux-events` | JetStream stream name. |
-| `--redis-addr` | string | `localhost:6379` | Redis server address. |
-| `--redis-db` | int | `0` | Redis database number. |
-
----
-
-## In-memory backend (default)
-
-The memory backend uses an in-process Go channel (via Watermill's GoChannel). No external services are needed.
-
-```bash
-duckflux run workflow.flux.yaml
-# equivalent to:
-duckflux run workflow.flux.yaml --event-backend=memory
-```
-
-### Characteristics
-
-- **Persistent mode enabled** — subscribers created after a `Publish` still receive past events. This means a `wait` step placed after an `emit` in the flow will correctly receive the event, even though the subscription starts after the event was published.
-- **Single process only** — events are not visible to other `duckflux run` processes.
-- **No setup required** — works out of the box.
-
-<Aside>
-  The memory backend is ideal for development, testing, and workflows that run as a single process. For production use cases where events need to cross process boundaries or survive restarts, use NATS or Redis.
-</Aside>
-
----
-
-## NATS JetStream backend
-
-Uses [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) for durable, distributed event delivery.
-
-```bash
-duckflux run workflow.flux.yaml \
-  --event-backend=nats \
-  --nats-url=nats://localhost:4222
-```
-
-### Pre-creating streams
-
-NATS JetStream stream names cannot contain dots, but duckflux event names use dot-notation (e.g. `payment.processed`). The runner handles this transparently by looking up streams by subject rather than by name.
-
-You **must** create streams before running. Replace dots with underscores in the stream name and use the original dot-notation event name as the subject:
-
-```bash
-nats stream add payment_processed \
-  --subjects "payment.processed" \
-  --storage file \
-  --replicas 1 \
-  --server nats://localhost:4222
-```
-
-Then reference the event normally in your workflow:
-
-```yaml
-participants:
-  notify:
-    type: emit
-    event: "payment.processed"
-    payload:
-      transactionId: "TXN-42"
-```
-
-<Aside type="caution">
-  If no stream is found for the event subject, the runner returns an error at subscribe time: `no stream found for subject "..."`. Make sure all event names used in `emit` and `wait` have a corresponding JetStream stream.
-</Aside>
-
-### Characteristics
-
-- **Ephemeral consumers** — each subscription creates an ephemeral JetStream consumer that is automatically cleaned up when the subscription ends.
-- **Subject-based stream lookup** — the runner uses `StreamNameBySubject` to find the correct stream, so dot-notation in event names works transparently.
-- **No replay** — ephemeral consumers start at the latest offset. If an event is published before the subscriber is ready, it will be missed. Design your flow accordingly (emit after the wait is registered, or use the memory backend for in-process replay).
-
----
-
-## Redis Streams backend
-
-Uses [Redis Streams](https://redis.io/docs/data-types/streams/) for persistent event delivery.
-
-```bash
-duckflux run workflow.flux.yaml \
-  --event-backend=redis \
-  --redis-addr=localhost:6379
-```
-
-### Characteristics
-
-- **Consumer groups** — the runner creates a consumer group named `duckflux` (configurable) for each event stream. This enables fan-out to multiple consumers.
-- **Replay support** — consumer groups read from the start of the stream, so events published before a subscriber is ready are still delivered.
-- **Auto-created streams** — Redis creates streams automatically on first publish. No manual setup is required.
-- **Stream key = event name** — the event name string is used directly as the Redis stream key.
-
-### Custom Redis database
-
-Use `--redis-db` to target a specific Redis database:
-
-```bash
-duckflux run workflow.flux.yaml \
-  --event-backend=redis \
-  --redis-addr=redis.internal:6379 \
-  --redis-db=2
-```
-
----
-
-## Sub-workflow hub sharing
-
-The event hub is shared recursively with all sub-workflows. An event emitted by the parent is visible to sub-workflows and vice versa — they all use the same underlying pub/sub bus.
-
-```yaml
-# parent.flux.yaml
-participants:
-  trigger:
-    type: emit
-    event: "job.started"
-    payload:
-      jobId: "42"
-
-  child:
-    type: workflow
-    path: ./child.flux.yaml
-
-flow:
-  - trigger    # publishes job.started to the shared hub
-  - child      # child.flux.yaml can wait for job.started
-```
-
-```yaml
-# child.flux.yaml
-flow:
-  - wait:
-      event: "job.started"
-      match: event.jobId == "42"
-      timeout: 10s
-
-  - as: process
-    type: exec
-    run: echo "Processing job"
-```
-
-<Aside type="caution">
-  To isolate a sub-workflow's events from the parent, run it as a separate `duckflux run` process instead of a `type: workflow` participant. Each process gets its own event hub instance.
-</Aside>
-
----
-
-## Choosing a backend
-
-| Scenario | Recommended backend |
-|----------|-------------------|
-| Local development and testing | `memory` |
-| Single-process workflows | `memory` |
-| Cross-process event delivery | `nats` or `redis` |
-| Durable event persistence | `redis` (auto-created streams) or `nats` (pre-created streams) |
-| Existing NATS infrastructure | `nats` |
-| Existing Redis infrastructure | `redis` |
-
----
-
-## Examples
-
-### Fire-and-forget with memory backend
-
-```bash
-duckflux run examples/events.flux.yaml
-```
-
-### Acknowledged emit with NATS
-
-```bash
-# Create the stream first
-nats stream add deploy_started \
-  --subjects "deploy.started" \
-  --storage file \
-  --replicas 1
-
-# Run the workflow
-duckflux run deploy.flux.yaml \
-  --event-backend=nats \
-  --nats-url=nats://localhost:4222
-```
-
-### Cross-process events with Redis
-
-Terminal 1 — wait for an event:
-
-```bash
-duckflux run listener.flux.yaml \
-  --event-backend=redis \
-  --redis-addr=localhost:6379
-```
-
-Terminal 2 — emit the event:
-
-```bash
-duckflux run emitter.flux.yaml \
-  --event-backend=redis \
-  --redis-addr=localhost:6379
-```
-
-Both processes share the same Redis Streams backend, so events emitted in one are visible to the other.
-
----
-
 # CLI Usage
 > How to use the DuckFlux CLI to run workflows.
 
@@ -4401,6 +4137,7 @@ duckflux <command> <workflow.yaml> [flags]
 | [`run`](#run) | Execute a workflow |
 | [`lint`](#lint) | Validate schema and detect common issues (no execution) |
 | [`validate`](#validate) | Full validation including input schema |
+| [`server`](#server) | Start the web server UI for visual workflow observation |
 | [`version`](#version) | Print the CLI version |
 
 ---
@@ -4431,6 +4168,8 @@ duckflux workflow.yaml   # same as: duckflux run workflow.yaml
 | `--nats-stream` | — | string | `duckflux-events` | JetStream stream name. |
 | `--redis-addr` | — | string | `localhost:6379` | Redis server address (`host:port`). |
 | `--redis-db` | — | string | `0` | Redis database number. |
+| `--trace-dir` | — | string | — | Directory to write execution trace files. One file per run, named `<executionId>.<ext>`. |
+| `--trace-format` | — | string | `json` | Trace output format: `json`, `txt`, or `sqlite`. |
 | `--verbose` | `-v` | boolean | `false` | Print error stack traces to `stderr`. |
 | `--quiet` | — | boolean | `false` | Suppress `stdout` output. |
 
@@ -4496,7 +4235,17 @@ duckflux run workflow.yaml \
 duckflux run workflow.yaml \
   --event-backend=redis \
   --redis-addr=localhost:6379
+
+# Write a JSON trace for each run
+duckflux run workflow.yaml --trace-dir ./traces
+
+# Write a SQLite trace (all runs in separate DB files)
+duckflux run workflow.yaml --trace-dir ./traces --trace-format sqlite
 ```
+
+### Tracing
+
+Use `--trace-dir` to capture a structured execution record for each run. See [Execution tracing](/runtime/tracing/) for full details.
 
 ---
 
@@ -4587,6 +4336,48 @@ duckflux validate workflow.yaml --input-file test-inputs.json
 # Piped inputs
 echo '{"name":"World"}' | duckflux validate workflow.yaml
 ```
+
+---
+
+## `server`
+
+Starts the duckflux web server UI — a local dev tool for executing and observing workflows visually. See [Web Server UI](/tooling/web-server-ui/) for a full feature walkthrough with screenshots.
+
+```bash
+duckflux server [flags]
+```
+
+### Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--trace-dir` | string | — | **Required.** Directory to watch for execution trace JSON files. |
+| `--workflow-dir` | string | cwd | Directory to scan for `.yaml` / `.yml` workflow files. |
+| `--port` | string | `3000` | HTTP port for the web UI. |
+
+### Auto-install
+
+If `@duckflux/server` is not installed in the current project, the CLI prompts to install it automatically:
+
+```
+@duckflux/server is not installed. Install it now? [Y/n]
+```
+
+Answering **Y** runs `bun add @duckflux/server -D` (falling back to `npm install` if Bun is not available).
+
+### Examples
+
+```bash
+# Start with trace output directory
+duckflux server --trace-dir ./traces
+
+# Custom workflow directory and port
+duckflux server --trace-dir ./traces --workflow-dir ./workflows --port 8080
+```
+
+<Aside type="tip">
+  The server watches `--trace-dir` for new or updated trace files in real time. Run workflows via the UI's execute button or from the CLI in another terminal — both feed into the same trace directory.
+</Aside>
 
 ---
 
@@ -5414,3 +5205,1292 @@ expect(hub.emitted).toContainEqual({
 
 await hub.close();
 ```
+
+---
+
+# Migrating from Ralph Orchestrator
+> How to replace Ralph Orchestrator hat-based workflows with declarative duckflux workflows.
+
+
+If you've been using **Ralph Orchestrator** to coordinate coding agents through hats and events, you already understand that complex AI tasks need structure beyond a bash loop. You've invested in event topologies, backpressure gates, and persona-based coordination.
+
+This guide shows how to express those same patterns in duckflux, where you get explicit flow control, native events (`emit`/`wait`), and the choice between deterministic sequencing and event-driven decoupling depending on what the problem actually needs.
+
+---
+
+## What is Ralph Orchestrator?
+
+[Ralph Orchestrator](https://mikeyobrien.github.io/ralph-orchestrator/) is a hat-based orchestration framework for AI coding agents. It builds on the Ralph Wiggum iteration technique but adds a coordination layer: specialized personas called **hats** communicate through **typed events** to break complex tasks into phases.
+
+The core model is an **event loop**. You define hats with `triggers` (events they react to) and `publishes` (events they can emit). Ralph routes events between hats based on pattern matching. The AI agent inside each hat decides *which* event to emit based on its reasoning, making the orchestration partially emergent from the agent's behavior.
+
+```yaml
+# ralph.yml
+event_loop:
+  starting_event: "task.start"
+  completion_promise: "LOOP_COMPLETE"
+  max_iterations: 50
+
+cli:
+  backend: claude
+
+hats:
+  planner:
+    triggers: ["task.start"]
+    publishes: ["tasks.ready"]
+    instructions: |
+      Break the task into subtasks.
+
+  builder:
+    triggers: ["tasks.ready", "review.rejected"]
+    publishes: ["review.ready"]
+    instructions: |
+      Implement the planned tasks.
+      Run tests before emitting review.ready.
+
+  critic:
+    triggers: ["review.ready"]
+    publishes: ["review.passed", "review.rejected"]
+    instructions: |
+      Review the implementation. Reject if tests fail.
+
+  finalizer:
+    triggers: ["review.passed"]
+    publishes: ["LOOP_COMPLETE"]
+    instructions: |
+      Verify everything passes and emit LOOP_COMPLETE.
+```
+
+In this example, the critic hat can publish either `review.passed` or `review.rejected`. Ralph doesn't decide which one fires. The agent does, based on what it sees in the code. If it emits `review.rejected`, the builder hat re-activates (because it triggers on `review.rejected`). If it emits `review.passed`, the finalizer activates. The workflow topology is static, but the execution path through it is dynamic.
+
+### Where the event model creates friction
+
+Ralph's event-driven approach is genuinely powerful for multi-agent coordination. But it comes with tradeoffs that get harder to manage as workflows grow:
+
+- **Implicit execution order.** You can't read the ralph.yml top to bottom and know what happens. The actual execution path depends on which events each hat's agent chooses to emit at runtime. To understand the workflow, you have to mentally trace the event graph across all hat definitions.
+- **Agent-decided routing.** When a hat can publish `review.passed` OR `review.rejected`, the orchestration logic lives partly inside the agent's prompt, not in the config file. If the agent misunderstands its instructions and emits the wrong event, the entire flow goes off-track in ways that are hard to debug from the topology alone.
+- **Events as implicit state.** Hats share context through event payloads and the file system ("Disk Is State"). But event payloads are intentionally kept small (routing signals, not data transport), so the real state transfer happens via files that aren't declared anywhere in the config. The workflow's data flow is invisible.
+- **Topology validation gaps.** Ralph validates that each trigger maps to exactly one hat (no ambiguity), but it can't validate that the agent will actually emit sensible events. A hat with `publishes: ["build.done", "build.blocked"]` might always emit `build.blocked` if the prompt is unclear, creating an infinite rejection loop that only `max_activations` can break.
+
+These aren't bugs in Ralph. They're inherent to the model: event-driven orchestration with LLM-decided routing trades predictability for flexibility. The question is whether your workflow actually needs that flexibility, or whether explicit flow control would make it easier to reason about, debug, and maintain.
+
+---
+
+## What is duckflux?
+
+duckflux is a declarative, YAML-based workflow DSL. You describe **what** should happen and in what order. The runtime handles execution, retries, parallelism, error handling, and tracing.
+
+```yaml
+flow:
+  - type: exec
+    run: npm test
+```
+
+Crucially, duckflux also has a native event system (`emit` + `wait`) for cases where decoupled communication genuinely helps. The difference from Ralph is that events are opt-in per step, not the entire coordination model. You use explicit flow for the deterministic parts and events for the parts that need asynchronous signaling.
+
+---
+
+## Two models of coordination
+
+Before diving into migration patterns, it's worth understanding the fundamental difference.
+
+**Ralph Orchestrator: event-driven, emergent flow.** You define a topology of hats and events. The execution path emerges at runtime from which events agents choose to emit. The config declares *relationships*, not order.
+
+**duckflux: explicit flow with optional events.** You write a top-to-bottom sequence. Control flow constructs (`loop`, `parallel`, `if`, `when`) handle branching and iteration. Events (`emit`/`wait`) handle cross-branch and cross-workflow signaling. The config declares *order*, with events for decoupled coordination.
+
+Neither model is universally better. But for most iterative coding workflows, the execution path is predictable enough that explicit flow gives you better debuggability without losing expressiveness.
+
+---
+
+## Concepts side by side
+
+| Ralph Orchestrator | duckflux | Notes |
+|---|---|---|
+| Hat | Participant | A named unit of work. In duckflux, not tied to agent personas. |
+| Event (routing) | Flow order / `when` guard / `if` | Explicit sequencing replaces event routing for deterministic paths. |
+| Event (signaling) | `emit` + `wait` | For async communication across branches or workflows. |
+| `starting_event` | First step in `flow` | The flow starts at the top. |
+| `completion_promise` | Workflow ends when `flow` completes | No magic string needed. |
+| `max_iterations` | `loop.max` / `retry.max` | Scoped per-loop or per-step, not global. |
+| `triggers` + `publishes` | `loop` + `until` condition | Feedback loops are explicit, not event-inferred. |
+| Backpressure (guardrails) | Real steps with exit codes | `npm test` as a flow step vs. prompt instruction. |
+| Memories | `execution.context` / `set` | Workflow-scoped state. Cross-session memory is outside duckflux scope. |
+| Glob patterns (`build.*`) | `wait` with `match` expression | CEL expressions instead of glob matching. |
+
+---
+
+## Migrating the code-assist pipeline
+
+The builtin `code-assist` preset defines four hats with a feedback loop: planner, builder, critic, finalizer. The critic can reject, sending the builder back to retry.
+
+### Ralph Orchestrator
+
+```yaml
+event_loop:
+  starting_event: "build.start"
+  completion_promise: "LOOP_COMPLETE"
+  max_iterations: 30
+
+hats:
+  planner:
+    triggers: ["build.start", "task.complete"]
+    publishes: ["tasks.ready"]
+    instructions: |
+      Read the spec. Break work into small tasks.
+
+  builder:
+    triggers: ["tasks.ready", "review.rejected"]
+    publishes: ["review.ready"]
+    instructions: |
+      Implement tasks. Before emitting review.ready:
+      - tests: pass
+      - lint: pass
+
+  critic:
+    triggers: ["review.ready"]
+    publishes: ["review.passed", "review.rejected"]
+    instructions: |
+      Review implementation. Reject if quality gates fail.
+
+  finalizer:
+    triggers: ["review.passed"]
+    publishes: ["task.complete", "LOOP_COMPLETE"]
+    instructions: |
+      Run final validation. Emit LOOP_COMPLETE if all checks pass.
+```
+
+The execution path here depends on the critic. If it emits `review.rejected`, the builder re-activates. If it emits `review.passed`, the finalizer runs. This feedback loop is implicit in the event topology.
+
+### duckflux
+
+```yaml
+# code-assist.flux.yaml
+participants:
+  plan:
+    type: exec
+    run: cat PROMPT_PLAN.md | $AGENT
+
+  build:
+    type: exec
+    run: cat PROMPT_BUILD.md | $AGENT
+    onError: retry
+    retry:
+      max: 5
+      backoff: 2s
+
+  test:
+    type: exec
+    run: npm test
+
+  lint:
+    type: exec
+    run: npm run lint
+
+  review:
+    type: exec
+    run: cat PROMPT_REVIEW.md | $AGENT
+
+flow:
+  - plan
+
+  - loop:
+      until: review.output.approved == true
+      max: 10
+      steps:
+        - build
+        - test
+        - lint
+        - review
+```
+
+The feedback loop is explicit: `loop` repeats until the review approves or the cap is hit. Quality gates (`test`, `lint`) are real commands that fail the flow if they fail. The builder doesn't need to self-report "tests: pass" in an event payload; the runtime knows because it ran `npm test` and saw the exit code.
+
+<Aside type="tip">
+In Ralph, the critic decides whether to reject. In duckflux, the `loop` + `until` condition decides. You can still use an agent-based review step, but the *loop control* lives in the DSL, not in the agent's reasoning. This means a confused agent can't accidentally skip the rejection loop by emitting the wrong event.
+</Aside>
+
+---
+
+## Migrating coordination patterns
+
+### Pipeline (linear handoff via events)
+
+In Ralph, even a simple pipeline uses events to chain hats:
+
+**Ralph Orchestrator:**
+```yaml
+hats:
+  test_writer:
+    triggers: ["tdd.start"]
+    publishes: ["test.written"]
+  implementer:
+    triggers: ["test.written"]
+    publishes: ["test.passing"]
+  refactorer:
+    triggers: ["test.passing"]
+    publishes: ["refactor.done"]
+```
+
+Three hats, three event hops. The ordering is deterministic (each hat publishes exactly one event), but you have to trace the graph to see it.
+
+**duckflux:**
+```yaml
+flow:
+  - as: write-tests
+    type: exec
+    run: cat PROMPT_TESTS.md | $AGENT
+
+  - as: implement
+    type: exec
+    run: cat PROMPT_IMPL.md | $AGENT
+
+  - as: refactor
+    type: exec
+    run: cat PROMPT_REFACTOR.md | $AGENT
+```
+
+When the execution path is deterministic, sequential steps are simpler than events. You read the order directly.
+
+### Adversarial review (cyclic event routing)
+
+This is where Ralph's event model shines: the red team either approves or finds vulnerabilities, and the fixer loops back.
+
+**Ralph Orchestrator:**
+```yaml
+hats:
+  builder:
+    triggers: ["security.review", "fix.applied"]
+    publishes: ["build.ready"]
+  red_team:
+    triggers: ["build.ready"]
+    publishes: ["vulnerability.found", "security.approved"]
+  fixer:
+    triggers: ["vulnerability.found"]
+    publishes: ["fix.applied"]
+```
+
+The cycle: builder -> red_team -> (vulnerability.found -> fixer -> fix.applied -> builder -> red_team) until `security.approved`.
+
+**duckflux:**
+```yaml
+participants:
+  build:
+    type: exec
+    run: cat PROMPT_BUILD.md | $AGENT
+
+  security-scan:
+    type: exec
+    run: cat PROMPT_SECURITY.md | $AGENT
+
+  fix:
+    type: exec
+    run: cat PROMPT_FIX.md | $AGENT
+
+flow:
+  - build
+
+  - loop:
+      until: security-scan.output.approved == true
+      max: 5
+      steps:
+        - security-scan
+        - fix:
+            when: security-scan.output.approved == false
+```
+
+The `when` guard on `fix` replaces the conditional event routing. The `loop` + `until` replaces the implicit cycle. Same behavior, but the flow reads linearly and the exit condition is declared, not inferred from event topology.
+
+### Coordinator-specialist with event signaling
+
+Ralph's coordinator-specialist pattern fans out work to multiple specialists. This is one case where duckflux events (`emit`/`wait`) are the right tool, because the branches genuinely need to signal each other.
+
+**Ralph Orchestrator:**
+```yaml
+hats:
+  analyzer:
+    triggers: ["gap.start", "verify.complete", "report.complete"]
+    publishes: ["analyze.spec", "verify.request", "report.request"]
+  verifier:
+    triggers: ["analyze.spec", "verify.request"]
+    publishes: ["verify.complete"]
+  reporter:
+    triggers: ["report.request"]
+    publishes: ["report.complete"]
+```
+
+**duckflux:**
+```yaml
+participants:
+  analyze:
+    type: exec
+    run: cat PROMPT_ANALYZE.md | $AGENT
+
+  verify:
+    type: exec
+    run: cat PROMPT_VERIFY.md | $AGENT
+
+  report:
+    type: exec
+    run: cat PROMPT_REPORT.md | $AGENT
+
+  signal-verified:
+    type: emit
+    event: "verify.complete"
+    payload: verify.output
+
+  signal-reported:
+    type: emit
+    event: "report.complete"
+    payload: report.output
+
+flow:
+  - analyze
+
+  - parallel:
+      - verify
+      - report
+
+  - as: notify
+    type: emit
+    event: "analysis.done"
+    payload:
+      verified: verify.output
+      reported: report.output
+```
+
+Here, `parallel:` runs verify and report concurrently (replacing the fan-out). The `emit` at the end publishes a completion event that other workflows or external systems can consume. If the branches needed to coordinate mid-execution, you could add `wait` steps inside each branch.
+
+### Cyclic rotation with events
+
+Ralph's mob-programming pattern (navigator, driver, observer) rotates through roles with events carrying feedback between them. This pattern benefits from events even in duckflux, because each role's output influences the next in a non-linear way.
+
+**Ralph Orchestrator:**
+```yaml
+hats:
+  navigator:
+    triggers: ["mob.start", "observation.noted"]
+    publishes: ["direction.set"]
+  driver:
+    triggers: ["direction.set"]
+    publishes: ["code.written"]
+  observer:
+    triggers: ["code.written"]
+    publishes: ["observation.noted", "mob.complete"]
+```
+
+**duckflux:**
+```yaml
+participants:
+  navigate:
+    type: exec
+    run: cat PROMPT_NAVIGATE.md | $AGENT
+
+  drive:
+    type: exec
+    run: cat PROMPT_DRIVE.md | $AGENT
+
+  observe:
+    type: exec
+    run: cat PROMPT_OBSERVE.md | $AGENT
+
+flow:
+  - loop:
+      until: observe.output.complete == true
+      max: 10
+      steps:
+        - navigate
+        - drive
+        - observe
+```
+
+The I/O chain passes each step's output as input to the next. The observer's output feeds back to the navigator on the next iteration via the chain. No events needed here because the data flows linearly within the loop.
+
+### Backpressure: prompt-injected vs. real gates
+
+This is the biggest philosophical difference between the two systems.
+
+**Ralph Orchestrator** enforces quality through prompt instructions and guardrails. The agent is *told* to run tests, and the hat instructions say "Before emitting build.done, you MUST have: tests: pass, lint: pass." But the agent could emit `build.done` anyway. The backpressure is advisory.
+
+```yaml
+core:
+  guardrails:
+    - "Tests must pass before declaring done"
+    - "Never skip linting"
+
+hats:
+  builder:
+    instructions: |
+      Before emitting build.done:
+      - tests: pass
+      - lint: pass
+      - typecheck: pass
+```
+
+**duckflux** enforces quality through actual steps. If `npm test` returns a non-zero exit code, the flow fails. The agent can't bypass the gate because the gate isn't a prompt instruction. It's a real command.
+
+```yaml
+flow:
+  - as: build
+    type: exec
+    run: cat PROMPT_BUILD.md | $AGENT
+
+  - as: test
+    type: exec
+    run: npm test
+
+  - as: lint
+    type: exec
+    run: npm run lint
+
+  - as: typecheck
+    type: exec
+    run: npx tsc --noEmit
+```
+
+You can combine both approaches: let the agent run tests during its iteration (for fast feedback), and then verify with a dedicated step in the flow (for guaranteed enforcement).
+
+---
+
+## When to use events vs. explicit flow
+
+Not every Ralph event pattern needs to become a duckflux event. Here's a rule of thumb:
+
+| Pattern in Ralph | duckflux equivalent | Why |
+|---|---|---|
+| Linear pipeline (`A -> B -> C`) | Sequential flow | Deterministic order doesn't need events. |
+| Feedback loop (`critic -> builder -> critic`) | `loop` + `until` | Exit condition is declared, not event-inferred. |
+| Conditional routing (`passed` vs `rejected`) | `if` / `when` | Flow constructs handle branching explicitly. |
+| Cross-branch signaling | `emit` + `wait` | Parallel branches that need to coordinate. |
+| Cross-workflow communication | `emit` + `wait` (shared event hub) | Parent/child workflows exchanging signals. |
+| External system notifications | `emit` (with event hub provider) | Fire-and-forget or acknowledged delivery to Kafka, NATS, etc. |
+
+---
+
+## What you gain
+
+| Concern | Ralph Orchestrator | duckflux |
+|---|---|---|
+| **Flow readability** | Trace event graph mentally | Read YAML top to bottom |
+| **Routing control** | Agent decides which event to emit | Flow constructs (`if`, `when`, `loop`) |
+| **Quality gates** | Prompt instructions (advisory) | Real steps with exit codes (enforced) |
+| **Retry** | Global `max_iterations` | Per-step `retry.max` with backoff |
+| **Parallel** | Git worktrees + `features.parallel` | `parallel:` construct, single trace |
+| **Event system** | Core coordination model | Opt-in for cross-branch/cross-workflow |
+| **Agent coupling** | Every hat invokes an agent | Mix agents, shell, HTTP, sub-workflows |
+| **State passing** | Event payloads + filesystem | I/O chain + `execution.context` |
+| **Observation** | TUI + web dashboard | [Web server UI](/tooling/web-server-ui/) with trace viewer + real-time SSE |
+
+## What you lose
+
+To be fair about the tradeoffs:
+
+- **Memory system.** Ralph's memories persist learnings across sessions. duckflux doesn't manage agent memory; you'd handle that in your prompts or agent configuration.
+- **TUI.** Ralph provides a real-time terminal UI for monitoring loops. duckflux has a [web server UI](/tooling/web-server-ui/) with a trace viewer, execution history, and real-time SSE updates, but no embedded TUI.
+- **Preset library.** Ralph ships 31 presets for common patterns. duckflux workflows are written from scratch (or copied from docs like this one).
+- **Agent-aware prompting.** Ralph injects hat instructions, guardrails, and memory context into each agent invocation. duckflux orchestrates commands; what goes into the prompt is up to you.
+
+---
+
+## Getting started
+
+1. **Install the runtime:**
+
+```bash
+bun add -g @duckflux/runner
+```
+
+2. **Map your ralph.yml hats** to duckflux participants. Each hat becomes a participant with `type: exec` (or `http`, `workflow`, etc.).
+
+3. **Replace event topology with flow constructs.** Linear chains become sequential steps. Feedback loops become `loop` + `until`. Conditional routing becomes `if` or `when`.
+
+4. **Keep events where they add value.** Cross-branch signaling, external notifications, and workflow-to-workflow communication use `emit` + `wait`.
+
+5. **Move backpressure from prompts to steps.** Add `npm test`, `npm run lint`, etc. as explicit participants in the flow.
+
+6. **Run it:**
+
+```bash
+duckflux run my-workflow.flux.yaml
+```
+
+<Aside type="tip">
+Start by migrating a pipeline preset (linear, no feedback loops). Once the basic flow works, add `loop` + `until` for the feedback patterns. Save event-based patterns (`emit`/`wait`) for last.
+</Aside>
+
+---
+
+## Final thoughts
+
+Ralph Orchestrator's event-driven model is a real innovation for multi-agent coordination. The hat system, the typed events, the backpressure philosophy (Tenet #2: "create gates that reject bad work") are solid ideas.
+
+duckflux takes a different bet: most of the time, you know the execution order. When you do, explicit flow is easier to read, debug, and maintain than event topology. And when you genuinely need decoupled coordination, `emit` + `wait` are there.
+
+The question isn't "which tool is more powerful." It's "how much of your workflow is actually non-deterministic?" If the answer is "not much," explicit flow wins. If you're orchestrating five agents that genuinely need to signal each other asynchronously, Ralph's model has merit. duckflux gives you the choice.
+
+---
+
+# Migrating from Ralph Loops
+> How to replace Ralph Wiggum bash loops with declarative duckflux workflows, and why you'd want to.
+
+
+If you've been running coding agent tasks inside **Ralph Loops**, you already understand the core insight: iteration beats perfection. You've seen what happens when you hand a well-written prompt to an AI agent and let it grind until the job is done.
+
+This guide shows how to take that same philosophy and express it as a **declarative, reproducible workflow** in duckflux. You gain structure, observability, and composability without giving up the power of iterative automation.
+
+---
+
+## What are Ralph Loops?
+
+[Ralph Wiggum](https://awesomeclaude.ai/ralph-wiggum) is an iterative AI development methodology built on a deceptively simple idea: feed a prompt to a coding agent in a loop until the task is complete. Named after the Simpsons character (who stumbles forward until he accidentally succeeds), the technique treats failures as data points and bets on persistence.
+
+Although it originated in the Claude Code ecosystem, the pattern is agent-agnostic. It works with any CLI-based coding agent (Codex, Gemini CLI, aider, etc.). The canonical form is a bash one-liner:
+
+```bash
+while :; do cat PROMPT.md | <your-agent-cli> ; done
+```
+
+Some agent plugins offer structured commands for it. For example, with the Claude Code Ralph plugin:
+
+```
+/ralph-loop:ralph-loop "Build the auth module" --max-iterations 15 --completion-promise "ALL_TESTS_PASS"
+```
+
+Ralph works. It has shipped hackathon projects overnight, completed $50k contracts for under $300 in API costs, and built entire programming languages. The methodology rests on four principles:
+
+1. **Iteration over perfection:** refinement through repetition, not first-pass accuracy.
+2. **Failures are data:** deterministic failures give you predictable, actionable feedback.
+3. **Operator skill matters:** prompt quality determines outcomes, not just model capability.
+4. **Persistence wins:** retry logic continues until the task is done.
+
+### Where Ralph starts to hurt
+
+Ralph Loops excel at greenfield, single-agent tasks with clear completion criteria. But as your automation grows, the cracks show:
+
+- **No visibility.** A bash loop gives you no structured trace of what happened, which iteration failed, or why.
+- **No composition.** Chaining multiple Ralph Loops means writing more bash glue (conditionals, file watchers, error handling), all imperatively.
+- **No reuse.** Each loop is a bespoke script. There's no shared vocabulary for "retry 3 times", "run these in parallel", or "skip this step if X".
+- **No portability.** The loop is tied to your shell, your machine, your specific agent CLI setup.
+
+These aren't flaws in Ralph. They're the natural ceiling of an imperative approach. Once you need **orchestration**, you need a DSL.
+
+---
+
+## What is duckflux?
+
+duckflux is a declarative, YAML-based workflow DSL. You describe **what** should happen and in what order. The runtime handles execution, retries, parallelism, error handling, and tracing.
+
+```yaml
+flow:
+  - type: exec
+    run: npm test
+```
+
+No SDK. No boilerplate. No vendor lock-in. A workflow is a `.flux.yaml` file that any conforming runtime can execute.
+
+Key features that matter for this migration:
+
+- **Retry & error handling:** built into the spec, not bolted on with bash.
+- **Loops:** native `loop` construct with `until` conditions and `max` caps, using CEL expressions.
+- **Parallel execution:** declare concurrent steps without `&` and `wait`.
+- **I/O chaining:** output from one step flows as input to the next, automatically.
+- **Execution tracing:** structured logs of every step, input, output, and error.
+
+---
+
+## Side-by-side comparison
+
+Let's look at a real pattern: running a code generation prompt iteratively until tests pass, with a maximum number of retries.
+
+### The Ralph way
+
+```bash
+# PROMPT.md contains the generation instructions
+# $AGENT is your coding agent CLI (claude, codex, aider, etc.)
+MAX=10
+i=0
+while [ $i -lt $MAX ]; do
+  cat PROMPT.md | $AGENT
+  if npm test 2>/dev/null; then
+    echo "Tests pass. Done."
+    exit 0
+  fi
+  i=$((i + 1))
+  echo "Iteration $i/$MAX — tests failed, retrying..."
+done
+echo "Gave up after $MAX iterations."
+exit 1
+```
+
+What's happening here:
+
+1. Feed the prompt to the coding agent.
+2. Run the test suite.
+3. If tests pass, stop. Otherwise, loop.
+4. Give up after 10 iterations.
+
+This works, but the logic is scattered across bash control flow, there's no structured output, and extending it (add a lint step? run two agents in parallel?) means rewriting the script.
+
+### The duckflux way
+
+```yaml title="codegen-loop.flux.yaml"
+flow:
+  - as: generate-and-test
+    type: exec
+    run: cat PROMPT.md | $AGENT && npm test
+    onError: retry
+    retry:
+      max: 10
+```
+
+That's it. The same behavior (iterative execution with a retry ceiling) expressed in 6 lines of YAML.
+
+But duckflux lets you go further. Let's decompose the steps and add observability:
+
+```yaml title="codegen-loop-v2.flux.yaml"
+participants:
+  generate:
+    type: exec
+    run: cat PROMPT.md | $AGENT
+
+flow:
+  - loop:
+      until: run-tests.status == "success"
+      max: 10
+      steps:
+        - generate
+        - as: run-tests
+          type: exec
+          run: npm test
+          onError: skip
+```
+
+Now each iteration is traced individually. You can see exactly which iteration failed, what the test output was, and how many cycles it took. The `loop` construct replaces the bash loop, `onError: skip` replaces the silent `2>/dev/null`, and `until` replaces the implicit exit condition.
+
+---
+
+## Migration cookbook
+
+Below are common Ralph patterns and their duckflux equivalents.
+
+### Simple loop until completion
+
+**Ralph:**
+```bash
+while :; do cat PROMPT.md | $AGENT ; done
+```
+
+**duckflux:**
+```yaml
+flow:
+  - type: exec
+    run: cat PROMPT.md | $AGENT
+    onError: retry
+    retry:
+      max: 50
+```
+
+### Phased loops (multi-step)
+
+**Ralph:**
+```bash
+# Phase 1
+/ralph-loop:ralph-loop "Build the API" --max-iterations 20 --completion-promise "API_DONE"
+# Phase 2
+/ralph-loop:ralph-loop "Build the UI" --max-iterations 20 --completion-promise "UI_DONE"
+```
+
+**duckflux:**
+```yaml
+participants:
+  build-api:
+    type: exec
+    run: cat PROMPT_API.md | $AGENT
+    onError: retry
+    retry:
+      max: 20
+
+  build-ui:
+    type: exec
+    run: cat PROMPT_UI.md | $AGENT
+    onError: retry
+    retry:
+      max: 20
+
+flow:
+  - build-api
+  - build-ui
+```
+
+Each phase is a named participant. Execution is sequential by default, so phase 2 only starts after phase 1 succeeds.
+
+### Parallel worktrees
+
+**Ralph:**
+```bash
+git worktree add ../project-auth -b feature/auth
+git worktree add ../project-api -b feature/api
+
+cd ../project-auth
+/ralph-loop:ralph-loop "Build auth" --max-iterations 30 &
+
+cd ../project-api
+/ralph-loop:ralph-loop "Build API" --max-iterations 30 &
+
+wait
+```
+
+**duckflux:**
+```yaml
+flow:
+  - parallel:
+      - as: auth
+        type: exec
+        run: cat PROMPT_AUTH.md | $AGENT
+        cwd: ../project-auth
+        onError: retry
+        retry:
+          max: 30
+      - as: api
+        type: exec
+        run: cat PROMPT_API.md | $AGENT
+        cwd: ../project-api
+        onError: retry
+        retry:
+          max: 30
+```
+
+No `&`, no `wait`, no PID management. The runtime handles concurrency, and the trace shows both branches side by side.
+
+### Conditional continuation
+
+**Ralph:**
+```bash
+cat PROMPT.md | $AGENT
+if [ -f "output.json" ]; then
+  cat PROMPT_PHASE2.md | $AGENT
+fi
+```
+
+**duckflux:**
+```yaml
+participants:
+  phase1:
+    type: exec
+    run: cat PROMPT.md | $AGENT
+
+  phase2:
+    type: exec
+    run: cat PROMPT_PHASE2.md | $AGENT
+
+flow:
+  - phase1
+  - phase2:
+      when: phase1.status == "success"
+```
+
+---
+
+## What you gain
+
+| Concern | Ralph Loop | duckflux |
+|---|---|---|
+| **Retry logic** | Hand-rolled bash | `onError: retry` + `retry.max` |
+| **Parallel execution** | `&` + `wait` + PID tracking | `parallel:` with named branches |
+| **Error handling** | `set -e` / `trap` / `if` chains | `onError: fail \| skip \| retry` per step |
+| **Execution trace** | Terminal scrollback | Structured JSON trace with step-level detail |
+| **Composition** | Copy-paste scripts | Named participants + nested workflows |
+| **Portability** | Bash + your machine | Any duckflux-conforming runtime |
+| **Readability** | Grows linearly with complexity | Declarative: complexity stays flat |
+
+---
+
+## Getting started
+
+1. **Install the runtime:**
+
+```bash
+bun add -g @duckflux/runner
+```
+
+2. **Write your workflow** as a `.flux.yaml` file using the patterns above.
+
+3. **Run it:**
+
+```bash
+duckflux run codegen-loop.flux.yaml
+```
+
+4. **Inspect the trace** to see exactly what happened at each step.
+
+<Aside type="tip">
+You don't have to migrate everything at once. Start with your most painful Ralph loop (the one with the most bash glue around it) and express it as a duckflux workflow. Keep your simpler loops as-is until you feel the benefit.
+</Aside>
+
+---
+
+## Final thoughts
+
+Ralph Loops proved that iterative AI automation works. duckflux takes that insight and gives it structure. The philosophy stays the same (iteration over perfection, persistence wins), but you trade bash glue for a declarative spec that's reproducible, traceable, and composable.
+
+The best prompt in the world still needs an orchestrator. That's what duckflux is for.
+
+---
+
+# Web Server UI
+> A local web-based dev tool for executing and observing duckflux workflows in real time.
+
+
+The **duckflux server** is a local web UI for running and inspecting workflows — think GitHub Actions, but for your duckflux flows. It ships as the `@duckflux/server` package and is launched via the [`duckflux server`](/runtime/cli/#server) CLI command.
+
+![Workflow list in dark mode](../../../assets/server/workflows-dark.png)
+
+---
+
+## Quick start
+
+```bash
+# 1. Make sure you have trace output enabled
+duckflux server --trace-dir ./traces --workflow-dir ./workflows
+
+# 2. Open the UI
+#    → http://localhost:3000
+```
+
+The server scans `--workflow-dir` for `.yaml` / `.yml` files and watches `--trace-dir` for trace JSON files. New traces appear in the UI in real time via Server-Sent Events.
+
+---
+
+## CLI flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--trace-dir` | string | — | **Required.** Directory to watch for execution trace JSON files. Created automatically if it doesn't exist. |
+| `--workflow-dir` | string | cwd | Directory to scan for workflow files (recursive). |
+| `--port` | string | `3000` | HTTP port for the web UI. |
+
+<Aside type="note">
+  The `--trace-dir` flag is consistent with the [`duckflux run --trace-dir`](/runtime/cli/#flags) flag. Point both commands at the same directory to see CLI-triggered executions in the server UI.
+</Aside>
+
+---
+
+## Features
+
+### Workflow sidebar
+
+The left sidebar lists all discovered workflows, sorted alphabetically. Each entry shows the workflow name (or relative file path if unnamed) and a play button for quick execution.
+
+Clicking a workflow navigates to its detail page showing execution history.
+
+### Workflow detail and execution history
+
+![Workflow detail with execution history](../../../assets/server/workflow-detail-dark.png)
+
+The detail page shows:
+
+- **Workflow name** and **version**
+- A **Run** button that opens the execute modal
+- A **table of past executions** with ID, status badge, start time, and duration
+- Click any row to drill into the trace viewer
+
+### Execute modal
+
+![Execute modal with input form](../../../assets/server/execute-modal-dark.png)
+
+Clicking **Run** on any workflow opens a modal with a dynamically generated form based on the workflow's `inputs` schema:
+
+| Input type | Form control |
+|------------|-------------|
+| `string` | Text input |
+| `number` / `integer` | Number input (with `min` / `max` from schema) |
+| `boolean` | Toggle switch |
+| `enum` | Dropdown select |
+
+Default values from the schema are pre-filled. The workflow is executed server-side and the result appears in the execution table once the trace file is written.
+
+### Trace viewer
+
+![Trace viewer showing execution steps](../../../assets/server/trace-viewer-dark.png)
+
+The trace viewer provides a GitHub Actions-style breakdown of a single execution:
+
+- **Execution header** — workflow name, status badge (success / failure / running), total duration, execution ID with copy button, and start timestamp
+- **Inputs / Output** — collapsible JSON viewers for the execution-level inputs and final output
+- **Step panels** — one collapsible panel per step, showing:
+  - Step name, participant type, status badge, and duration
+  - Loop index and retry count (when applicable)
+  - Error message (for failed steps)
+  - Collapsible Input / Output JSON viewers per step
+
+### Real-time updates
+
+The server uses **Server-Sent Events (SSE)** to push updates to the browser:
+
+1. A [chokidar](https://github.com/paulmillr/chokidar) file watcher monitors `--trace-dir` for `*.json` changes
+2. New or updated trace files trigger SSE events (`trace:new`, `trace:updated`)
+3. The browser receives events and refreshes the relevant data via [SWR](https://swr.vercel.app/)
+
+This means you can run workflows from the CLI in one terminal and watch them appear in the UI instantly.
+
+### Dark / light mode
+
+![Light mode](../../../assets/server/workflow-detail-light.png)
+
+The UI ships with both dark and light themes following the duckflux brand identity. Toggle between them using the sun/moon button in the sidebar header. The preference is saved to `localStorage` and respects your system's `prefers-color-scheme` setting on first visit.
+
+---
+
+## Architecture
+
+The server runs as a single Next.js process — the API routes and the UI are served from the same port. No separate API server or proxy configuration needed.
+
+```
+┌─────────────────────────────────────┐
+│          Next.js (port 3000)        │
+│                                     │
+│  ┌──────────┐    ┌───────────────┐  │
+│  │  React   │    │  API Routes   │  │
+│  │   UI     │ ←→ │  /api/*       │  │
+│  │ (antd 5) │    │  (SSE, REST)  │  │
+│  └──────────┘    └───────┬───────┘  │
+│                          │          │
+│                   ┌──────┴───────┐  │
+│                   │  chokidar    │  │
+│                   │  watcher     │  │
+│                   └──────┬───────┘  │
+└──────────────────────────┼──────────┘
+                           │
+                    ┌──────┴───────┐
+                    │  trace-dir/  │
+                    │  *.json      │
+                    └──────────────┘
+```
+
+### API endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/workflows` | List all discovered workflows |
+| `GET` | `/api/workflows/:id` | Get a single workflow's metadata |
+| `GET` | `/api/executions` | List all executions (optional `?workflowId=` filter) |
+| `GET` | `/api/executions/:id` | Get a single execution trace |
+| `POST` | `/api/execute` | Execute a workflow (fire-and-forget) |
+| `GET` | `/api/events` | SSE stream of trace events |
+
+### Tech stack
+
+| Layer | Technology |
+|-------|-----------|
+| UI framework | [Next.js 15](https://nextjs.org/) (App Router) |
+| Component library | [Ant Design 5](https://ant.design/) |
+| Data fetching | [SWR](https://swr.vercel.app/) |
+| File watching | [chokidar 4](https://github.com/paulmillr/chokidar) |
+| Workflow engine | `@duckflux/core` |
+
+---
+
+## Package details
+
+- **npm package:** `@duckflux/server`
+- **Binary:** `duckflux-server`
+- **Minimum runtime:** Bun 1.x or Node.js 20+
+
+The package is auto-installed by `duckflux server` when not present in the project. You can also install it manually:
+
+```bash
+bun add @duckflux/server -D
+# or
+npm install @duckflux/server --save-dev
+```
+
+---
+
+# Execution tracing
+> Capture structured execution records for every workflow run — JSON, TXT, or SQLite.
+
+
+Execution tracing writes a structured record of every workflow run to disk. Each execution produces **one file**, named after the execution ID, in a directory you choose.
+
+Tracing is incremental: each step is written to the file as it completes, not at the end of the workflow. This means you can inspect a trace while a long-running workflow is still executing.
+
+---
+
+## Quick start
+
+```bash
+# JSON trace (default)
+duckflux run workflow.yaml --trace-dir ./traces
+
+# TXT trace — human-readable sections
+duckflux run workflow.yaml --trace-dir ./traces --trace-format txt
+
+# SQLite trace — queryable with any SQL client
+duckflux run workflow.yaml --trace-dir ./traces --trace-format sqlite
+```
+
+Output files are named `<executionId>.<ext>`:
+
+```
+traces/
+  550e8400-e29b-41d4-a716-446655440000.json
+  7c9e6679-7425-40de-944b-e07fc1f90ae7.json
+```
+
+---
+
+## Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--trace-dir` | string | — | Directory to write trace files. Created automatically if it does not exist. |
+| `--trace-format` | string | `json` | Output format: `json`, `txt`, or `sqlite`. |
+
+<Aside type="tip">
+  `--trace-dir` is the only required flag. `--trace-format` defaults to `json`.
+</Aside>
+
+---
+
+## What is traced
+
+Every step in the workflow produces a trace entry — not just participant steps, but also all control-flow constructs:
+
+| Step type | Traced as |
+|-----------|-----------|
+| `exec`, `http`, `workflow`, `emit` | participant type (`exec`, `http`, etc.) |
+| `loop` | `loop` — one entry for the entire loop block |
+| `parallel` | `parallel` — one entry for the entire parallel block |
+| `if` / `else` | `if` — one entry per conditional block |
+| `set` | `set` |
+| `wait` | `wait` |
+
+Each trace entry includes:
+
+| Field | Description |
+|-------|-------------|
+| `seq` | Execution order (1-based, unique per run) |
+| `name` | Step name or construct type |
+| `type` | Participant or construct type |
+| `startedAt` | ISO timestamp |
+| `finishedAt` | ISO timestamp |
+| `duration` | Duration in milliseconds |
+| `status` | `success`, `failure`, or `skipped` |
+| `input` | Resolved input passed to the step |
+| `output` | Output produced by the step |
+| `error` | Error message, if the step failed |
+| `retries` | Number of retry attempts (if `onError: retry`) |
+| `loopIndex` | Current loop iteration index (when inside a loop) |
+
+### Truncation
+
+`input` and `output` fields are truncated at **1 MB** across all formats. Truncated values end with `...[truncated]`. Metadata fields (timestamps, durations, status) are never truncated.
+
+---
+
+## Formats
+
+<Tabs>
+  <TabItem label="JSON">
+
+A single JSON document written incrementally. The file is always valid JSON — it is rewritten after each step completes.
+
+```json
+{
+  "execution": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "workflowName": "fetch-and-process",
+    "workflowVersion": "1.0",
+    "startedAt": "2026-03-31T10:00:00.000Z",
+    "finishedAt": "2026-03-31T10:00:01.234Z",
+    "duration": 1234,
+    "status": "success",
+    "inputs": { "url": "https://api.example.com/data" },
+    "output": { "count": 42 }
+  },
+  "steps": [
+    {
+      "seq": 1,
+      "name": "fetch",
+      "type": "http",
+      "startedAt": "2026-03-31T10:00:00.100Z",
+      "finishedAt": "2026-03-31T10:00:00.820Z",
+      "duration": 720,
+      "status": "success",
+      "input": { "url": "https://api.example.com/data" },
+      "output": "[{\"id\":1},{\"id\":2}]"
+    },
+    {
+      "seq": 2,
+      "name": "process",
+      "type": "exec",
+      "startedAt": "2026-03-31T10:00:00.825Z",
+      "finishedAt": "2026-03-31T10:00:01.230Z",
+      "duration": 405,
+      "status": "success",
+      "input": "[{\"id\":1},{\"id\":2}]",
+      "output": "42"
+    }
+  ]
+}
+```
+
+  </TabItem>
+  <TabItem label="TXT">
+
+A human-readable file with named sections. The header is written at start; step sections are appended as each step completes; the `# output` section is appended at the end.
+
+```
+# execution
+id: 550e8400-e29b-41d4-a716-446655440000
+workflow: fetch-and-process (v1.0)
+startedAt: 2026-03-31T10:00:00.000Z
+status: success
+finishedAt: 2026-03-31T10:00:01.234Z
+duration: 1234ms
+
+# inputs
+{
+  "url": "https://api.example.com/data"
+}
+
+# steps
+
+## [1] fetch (http)
+startedAt: 2026-03-31T10:00:00.100Z
+finishedAt: 2026-03-31T10:00:00.820Z
+duration: 720ms
+status: success
+input: {"url":"https://api.example.com/data"}
+output: [{"id":1},{"id":2}]
+
+## [2] process (exec)
+startedAt: 2026-03-31T10:00:00.825Z
+finishedAt: 2026-03-31T10:00:01.230Z
+duration: 405ms
+status: success
+input: [{"id":1},{"id":2}]
+output: 42
+
+# output
+{
+  "count": 42
+}
+```
+
+  </TabItem>
+  <TabItem label="SQLite">
+
+A SQLite database with two tables: `executions` and `steps`. Each step is inserted as it completes. The execution row is inserted at start with `status = 'running'` and updated at the end.
+
+**`executions` table**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | TEXT PK | Execution UUID |
+| `workflow_id` | TEXT | `workflow.id` field |
+| `workflow_name` | TEXT | `workflow.name` field |
+| `workflow_version` | TEXT | `workflow.version` field |
+| `started_at` | TEXT | ISO timestamp |
+| `finished_at` | TEXT | ISO timestamp (NULL while running) |
+| `duration_ms` | INTEGER | Total duration in ms (NULL while running) |
+| `status` | TEXT | `running` → `success` or `failure` |
+| `inputs` | TEXT | JSON (truncated at 1 MB) |
+| `output` | TEXT | JSON (truncated at 1 MB, NULL while running) |
+
+**`steps` table**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PK | Auto-increment |
+| `execution_id` | TEXT | FK → `executions.id` |
+| `seq` | INTEGER | Execution order |
+| `name` | TEXT | Step name |
+| `type` | TEXT | Step type |
+| `started_at` | TEXT | ISO timestamp |
+| `finished_at` | TEXT | ISO timestamp |
+| `duration_ms` | INTEGER | Duration in ms |
+| `status` | TEXT | `success`, `failure`, or `skipped` |
+| `input` | TEXT | JSON (truncated at 1 MB) |
+| `output` | TEXT | JSON (truncated at 1 MB) |
+| `error` | TEXT | Error message |
+| `retries` | INTEGER | Retry count |
+| `loop_index` | INTEGER | Loop iteration index |
+
+**Example queries**
+
+```sql
+-- All failed steps across all executions
+SELECT e.workflow_name, s.name, s.error
+FROM steps s JOIN executions e ON s.execution_id = e.id
+WHERE s.status = 'failure';
+
+-- Slowest steps in a given execution
+SELECT name, type, duration_ms
+FROM steps
+WHERE execution_id = '550e8400-e29b-41d4-a716-446655440000'
+ORDER BY duration_ms DESC;
+
+-- All loop iterations for a step
+SELECT seq, name, loop_index, duration_ms, status
+FROM steps
+WHERE execution_id = '...' AND name = 'fetchItem'
+ORDER BY loop_index;
+```
+
+  </TabItem>
+</Tabs>
+
+---
+
+## Tracing with loops
+
+When a participant runs inside a `loop`, each iteration produces its own trace entry with the same `name` but a different `seq` and `loopIndex`:
+
+```json
+{ "seq": 3, "name": "fetchItem", "type": "exec", "loopIndex": 0, "duration": 82, "status": "success" },
+{ "seq": 4, "name": "fetchItem", "type": "exec", "loopIndex": 1, "duration": 75, "status": "success" },
+{ "seq": 5, "name": "fetchItem", "type": "exec", "loopIndex": 2, "duration": 91, "status": "success" }
+```
+
+The `loop` construct itself also appears as its own entry (type `loop`), wrapping all iterations:
+
+```json
+{ "seq": 2, "name": "loop", "type": "loop", "duration": 260, "status": "success" }
+```
+
+---
+
+## Tracing failed workflows
+
+A trace is always written, even when the workflow fails. Failed steps have `status: "failure"` and an `error` field:
+
+```json
+{
+  "seq": 2,
+  "name": "callApi",
+  "type": "http",
+  "status": "failure",
+  "error": "HTTP 503: Service Unavailable",
+  "duration": 5003
+}
+```
+
+The `execution.status` in the trace header is `"failure"` when any step failed.
+
+---
+
+## Library usage
+
+When using `@duckflux/core` directly, pass `traceDir` and `traceFormat` to `executeWorkflow`:
+
+```typescript
+
+const result = await executeWorkflow(workflow, inputs, basePath, {
+  traceDir: "./traces",
+  traceFormat: "json",   // "json" | "txt" | "sqlite"
+});
+```
+
+<Aside type="note">
+  Tracing is only active on the root workflow. Sub-workflow steps are captured as `workflow`-type entries in the parent trace — sub-workflows do not produce their own separate trace files.
+</Aside>

@@ -24,11 +24,11 @@
 
 ## Runner CLI (Go)
 
-- [runner-cli/introduction](https://docs.duckflux.openvibes.tech/runner-cli/introduction/): Introdução ao Runner CLI.
-- [runner-cli/installation](https://docs.duckflux.openvibes.tech/runner-cli/installation/): Como instalar o Runner CLI.
-- [runner-cli/running-workflows](https://docs.duckflux.openvibes.tech/runner-cli/running-workflows/): Executando workflows com o Runner CLI.
-- [runner-cli/linting-validation](https://docs.duckflux.openvibes.tech/runner-cli/linting-validation/): Ferramentas de lint/validação para workflows.
-- [runner-cli/event-hubs-channels](https://docs.duckflux.openvibes.tech/runner-cli/event-hubs-channels/): Configure and use event hub backends in the duckflux Runner CLI — memory, NATS JetStream, and Redis Streams.
+- [runner-cli/introduction](https://docs.duckflux.openvibes.tech/runner-cli/introduction/)
+- [runner-cli/installation](https://docs.duckflux.openvibes.tech/runner-cli/installation/)
+- [runner-cli/running-workflows](https://docs.duckflux.openvibes.tech/runner-cli/running-workflows/)
+- [runner-cli/linting-validation](https://docs.duckflux.openvibes.tech/runner-cli/linting-validation/)
+- [runner-cli/event-hubs-channels](https://docs.duckflux.openvibes.tech/runner-cli/event-hubs-channels/)
 
 ## JavaScript runtime
 
