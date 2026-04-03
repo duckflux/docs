@@ -16,15 +16,11 @@ quack <command> <workflow.yaml> [flags]
 ## Installation
 
 <Tabs>
-  <TabItem label="No install">
-    Run without installing — always uses the latest published version.
+  <TabItem label="Universal">
+    Auto-detects your package manager (apt, brew, bun, npm) and installs accordingly. Falls back to downloading a standalone binary.
 
     ```bash
-    # Node.js
-    npx duckflux run workflow.yaml
-
-    # Bun
-    bunx duckflux run workflow.yaml
+    curl -fsSL https://duckflux.github.io/apt-repo/install.sh | bash
     ```
   </TabItem>
 
@@ -44,7 +40,7 @@ quack <command> <workflow.yaml> [flags]
     ```
   </TabItem>
 
-  <TabItem label="Generic (npm/Bun)">
+  <TabItem label="npm/bun">
     Install globally so `quack` is available everywhere on your machine.
 
     ```bash
@@ -62,7 +58,19 @@ quack <command> <workflow.yaml> [flags]
     ```
   </TabItem>
 
-  <TabItem label="Others">
+  <TabItem label="npx/bunx">
+    Run without installing — always uses the latest published version.
+
+    ```bash
+    # Node.js
+    npx duckflux run workflow.yaml
+
+    # Bun
+    bunx duckflux run workflow.yaml
+    ```
+  </TabItem>
+
+  <TabItem label="Binaries">
     Download a self-contained binary (no Node.js or Bun required) from the [GitHub Releases page](https://github.com/duckflux/runtime-js/releases/latest).
 
     | Platform | File |

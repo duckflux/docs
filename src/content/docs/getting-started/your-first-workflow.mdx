@@ -21,14 +21,14 @@ That's it — one step, one command. A workflow is just a YAML file with a `flow
 
 ## 2. Install the runtime
 
-Duckflux workflows are plain YAML files — they need a **runtime** to execute. Install it globally:
+Duckflux workflows are plain YAML files — they need a **runtime** to execute. Run the install script to auto-detect your package manager:
 
 ```bash
-npm install -g duckflux
+curl -fsSL https://duckflux.github.io/apt-repo/install.sh | bash
 ```
 
 <Aside>
-  For more installation options (Bun, Homebrew, standalone binaries, etc.), see the full [CLI installation guide](/runtime/cli/#installation).
+  The script detects apt, brew, bun, or npm automatically. For manual options, see the full [CLI installation guide](/runtime/cli/#installation).
 </Aside>
 
 ---
