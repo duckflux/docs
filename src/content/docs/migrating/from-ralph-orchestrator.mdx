@@ -1,0 +1,521 @@
+---
+title: Migrating from Ralph Orchestrator
+description: How to replace Ralph Orchestrator hat-based workflows with declarative duckflux workflows.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+If you've been using **Ralph Orchestrator** to coordinate coding agents through hats and events, you already understand that complex AI tasks need structure beyond a bash loop. You've invested in event topologies, backpressure gates, and persona-based coordination.
+
+This guide shows how to express those same patterns in duckflux, where you get explicit flow control, native events (`emit`/`wait`), and the choice between deterministic sequencing and event-driven decoupling depending on what the problem actually needs.
+
+---
+
+## What is Ralph Orchestrator?
+
+[Ralph Orchestrator](https://mikeyobrien.github.io/ralph-orchestrator/) is a hat-based orchestration framework for AI coding agents. It builds on the Ralph Wiggum iteration technique but adds a coordination layer: specialized personas called **hats** communicate through **typed events** to break complex tasks into phases.
+
+The core model is an **event loop**. You define hats with `triggers` (events they react to) and `publishes` (events they can emit). Ralph routes events between hats based on pattern matching. The AI agent inside each hat decides *which* event to emit based on its reasoning, making the orchestration partially emergent from the agent's behavior.
+
+```yaml
+# ralph.yml
+event_loop:
+  starting_event: "task.start"
+  completion_promise: "LOOP_COMPLETE"
+  max_iterations: 50
+
+cli:
+  backend: claude
+
+hats:
+  planner:
+    triggers: ["task.start"]
+    publishes: ["tasks.ready"]
+    instructions: |
+      Break the task into subtasks.
+
+  builder:
+    triggers: ["tasks.ready", "review.rejected"]
+    publishes: ["review.ready"]
+    instructions: |
+      Implement the planned tasks.
+      Run tests before emitting review.ready.
+
+  critic:
+    triggers: ["review.ready"]
+    publishes: ["review.passed", "review.rejected"]
+    instructions: |
+      Review the implementation. Reject if tests fail.
+
+  finalizer:
+    triggers: ["review.passed"]
+    publishes: ["LOOP_COMPLETE"]
+    instructions: |
+      Verify everything passes and emit LOOP_COMPLETE.
+```
+
+In this example, the critic hat can publish either `review.passed` or `review.rejected`. Ralph doesn't decide which one fires. The agent does, based on what it sees in the code. If it emits `review.rejected`, the builder hat re-activates (because it triggers on `review.rejected`). If it emits `review.passed`, the finalizer activates. The workflow topology is static, but the execution path through it is dynamic.
+
+### Where the event model creates friction
+
+Ralph's event-driven approach is genuinely powerful for multi-agent coordination. But it comes with tradeoffs that get harder to manage as workflows grow:
+
+- **Implicit execution order.** You can't read the ralph.yml top to bottom and know what happens. The actual execution path depends on which events each hat's agent chooses to emit at runtime. To understand the workflow, you have to mentally trace the event graph across all hat definitions.
+- **Agent-decided routing.** When a hat can publish `review.passed` OR `review.rejected`, the orchestration logic lives partly inside the agent's prompt, not in the config file. If the agent misunderstands its instructions and emits the wrong event, the entire flow goes off-track in ways that are hard to debug from the topology alone.
+- **Events as implicit state.** Hats share context through event payloads and the file system ("Disk Is State"). But event payloads are intentionally kept small (routing signals, not data transport), so the real state transfer happens via files that aren't declared anywhere in the config. The workflow's data flow is invisible.
+- **Topology validation gaps.** Ralph validates that each trigger maps to exactly one hat (no ambiguity), but it can't validate that the agent will actually emit sensible events. A hat with `publishes: ["build.done", "build.blocked"]` might always emit `build.blocked` if the prompt is unclear, creating an infinite rejection loop that only `max_activations` can break.
+
+These aren't bugs in Ralph. They're inherent to the model: event-driven orchestration with LLM-decided routing trades predictability for flexibility. The question is whether your workflow actually needs that flexibility, or whether explicit flow control would make it easier to reason about, debug, and maintain.
+
+---
+
+## What is duckflux?
+
+duckflux is a declarative, YAML-based workflow DSL. You describe **what** should happen and in what order. The runtime handles execution, retries, parallelism, error handling, and tracing.
+
+```yaml
+flow:
+  - type: exec
+    run: npm test
+```
+
+Crucially, duckflux also has a native event system (`emit` + `wait`) for cases where decoupled communication genuinely helps. The difference from Ralph is that events are opt-in per step, not the entire coordination model. You use explicit flow for the deterministic parts and events for the parts that need asynchronous signaling.
+
+---
+
+## Two models of coordination
+
+Before diving into migration patterns, it's worth understanding the fundamental difference.
+
+**Ralph Orchestrator: event-driven, emergent flow.** You define a topology of hats and events. The execution path emerges at runtime from which events agents choose to emit. The config declares *relationships*, not order.
+
+**duckflux: explicit flow with optional events.** You write a top-to-bottom sequence. Control flow constructs (`loop`, `parallel`, `if`, `when`) handle branching and iteration. Events (`emit`/`wait`) handle cross-branch and cross-workflow signaling. The config declares *order*, with events for decoupled coordination.
+
+Neither model is universally better. But for most iterative coding workflows, the execution path is predictable enough that explicit flow gives you better debuggability without losing expressiveness.
+
+---
+
+## Concepts side by side
+
+| Ralph Orchestrator | duckflux | Notes |
+|---|---|---|
+| Hat | Participant | A named unit of work. In duckflux, not tied to agent personas. |
+| Event (routing) | Flow order / `when` guard / `if` | Explicit sequencing replaces event routing for deterministic paths. |
+| Event (signaling) | `emit` + `wait` | For async communication across branches or workflows. |
+| `starting_event` | First step in `flow` | The flow starts at the top. |
+| `completion_promise` | Workflow ends when `flow` completes | No magic string needed. |
+| `max_iterations` | `loop.max` / `retry.max` | Scoped per-loop or per-step, not global. |
+| `triggers` + `publishes` | `loop` + `until` condition | Feedback loops are explicit, not event-inferred. |
+| Backpressure (guardrails) | Real steps with exit codes | `npm test` as a flow step vs. prompt instruction. |
+| Memories | `execution.context` / `set` | Workflow-scoped state. Cross-session memory is outside duckflux scope. |
+| Glob patterns (`build.*`) | `wait` with `match` expression | CEL expressions instead of glob matching. |
+
+---
+
+## Migrating the code-assist pipeline
+
+The builtin `code-assist` preset defines four hats with a feedback loop: planner, builder, critic, finalizer. The critic can reject, sending the builder back to retry.
+
+### Ralph Orchestrator
+
+```yaml
+event_loop:
+  starting_event: "build.start"
+  completion_promise: "LOOP_COMPLETE"
+  max_iterations: 30
+
+hats:
+  planner:
+    triggers: ["build.start", "task.complete"]
+    publishes: ["tasks.ready"]
+    instructions: |
+      Read the spec. Break work into small tasks.
+
+  builder:
+    triggers: ["tasks.ready", "review.rejected"]
+    publishes: ["review.ready"]
+    instructions: |
+      Implement tasks. Before emitting review.ready:
+      - tests: pass
+      - lint: pass
+
+  critic:
+    triggers: ["review.ready"]
+    publishes: ["review.passed", "review.rejected"]
+    instructions: |
+      Review implementation. Reject if quality gates fail.
+
+  finalizer:
+    triggers: ["review.passed"]
+    publishes: ["task.complete", "LOOP_COMPLETE"]
+    instructions: |
+      Run final validation. Emit LOOP_COMPLETE if all checks pass.
+```
+
+The execution path here depends on the critic. If it emits `review.rejected`, the builder re-activates. If it emits `review.passed`, the finalizer runs. This feedback loop is implicit in the event topology.
+
+### duckflux
+
+```yaml
+# code-assist.flux.yaml
+participants:
+  plan:
+    type: exec
+    run: cat PROMPT_PLAN.md | $AGENT
+
+  build:
+    type: exec
+    run: cat PROMPT_BUILD.md | $AGENT
+    onError: retry
+    retry:
+      max: 5
+      backoff: 2s
+
+  test:
+    type: exec
+    run: npm test
+
+  lint:
+    type: exec
+    run: npm run lint
+
+  review:
+    type: exec
+    run: cat PROMPT_REVIEW.md | $AGENT
+
+flow:
+  - plan
+
+  - loop:
+      until: review.output.approved == true
+      max: 10
+      steps:
+        - build
+        - test
+        - lint
+        - review
+```
+
+The feedback loop is explicit: `loop` repeats until the review approves or the cap is hit. Quality gates (`test`, `lint`) are real commands that fail the flow if they fail. The builder doesn't need to self-report "tests: pass" in an event payload; the runtime knows because it ran `npm test` and saw the exit code.
+
+<Aside type="tip">
+In Ralph, the critic decides whether to reject. In duckflux, the `loop` + `until` condition decides. You can still use an agent-based review step, but the *loop control* lives in the DSL, not in the agent's reasoning. This means a confused agent can't accidentally skip the rejection loop by emitting the wrong event.
+</Aside>
+
+---
+
+## Migrating coordination patterns
+
+### Pipeline (linear handoff via events)
+
+In Ralph, even a simple pipeline uses events to chain hats:
+
+**Ralph Orchestrator:**
+```yaml
+hats:
+  test_writer:
+    triggers: ["tdd.start"]
+    publishes: ["test.written"]
+  implementer:
+    triggers: ["test.written"]
+    publishes: ["test.passing"]
+  refactorer:
+    triggers: ["test.passing"]
+    publishes: ["refactor.done"]
+```
+
+Three hats, three event hops. The ordering is deterministic (each hat publishes exactly one event), but you have to trace the graph to see it.
+
+**duckflux:**
+```yaml
+flow:
+  - as: write-tests
+    type: exec
+    run: cat PROMPT_TESTS.md | $AGENT
+
+  - as: implement
+    type: exec
+    run: cat PROMPT_IMPL.md | $AGENT
+
+  - as: refactor
+    type: exec
+    run: cat PROMPT_REFACTOR.md | $AGENT
+```
+
+When the execution path is deterministic, sequential steps are simpler than events. You read the order directly.
+
+### Adversarial review (cyclic event routing)
+
+This is where Ralph's event model shines: the red team either approves or finds vulnerabilities, and the fixer loops back.
+
+**Ralph Orchestrator:**
+```yaml
+hats:
+  builder:
+    triggers: ["security.review", "fix.applied"]
+    publishes: ["build.ready"]
+  red_team:
+    triggers: ["build.ready"]
+    publishes: ["vulnerability.found", "security.approved"]
+  fixer:
+    triggers: ["vulnerability.found"]
+    publishes: ["fix.applied"]
+```
+
+The cycle: builder -> red_team -> (vulnerability.found -> fixer -> fix.applied -> builder -> red_team) until `security.approved`.
+
+**duckflux:**
+```yaml
+participants:
+  build:
+    type: exec
+    run: cat PROMPT_BUILD.md | $AGENT
+
+  security-scan:
+    type: exec
+    run: cat PROMPT_SECURITY.md | $AGENT
+
+  fix:
+    type: exec
+    run: cat PROMPT_FIX.md | $AGENT
+
+flow:
+  - build
+
+  - loop:
+      until: security-scan.output.approved == true
+      max: 5
+      steps:
+        - security-scan
+        - fix:
+            when: security-scan.output.approved == false
+```
+
+The `when` guard on `fix` replaces the conditional event routing. The `loop` + `until` replaces the implicit cycle. Same behavior, but the flow reads linearly and the exit condition is declared, not inferred from event topology.
+
+### Coordinator-specialist with event signaling
+
+Ralph's coordinator-specialist pattern fans out work to multiple specialists. This is one case where duckflux events (`emit`/`wait`) are the right tool, because the branches genuinely need to signal each other.
+
+**Ralph Orchestrator:**
+```yaml
+hats:
+  analyzer:
+    triggers: ["gap.start", "verify.complete", "report.complete"]
+    publishes: ["analyze.spec", "verify.request", "report.request"]
+  verifier:
+    triggers: ["analyze.spec", "verify.request"]
+    publishes: ["verify.complete"]
+  reporter:
+    triggers: ["report.request"]
+    publishes: ["report.complete"]
+```
+
+**duckflux:**
+```yaml
+participants:
+  analyze:
+    type: exec
+    run: cat PROMPT_ANALYZE.md | $AGENT
+
+  verify:
+    type: exec
+    run: cat PROMPT_VERIFY.md | $AGENT
+
+  report:
+    type: exec
+    run: cat PROMPT_REPORT.md | $AGENT
+
+  signal-verified:
+    type: emit
+    event: "verify.complete"
+    payload: verify.output
+
+  signal-reported:
+    type: emit
+    event: "report.complete"
+    payload: report.output
+
+flow:
+  - analyze
+
+  - parallel:
+      - verify
+      - report
+
+  - as: notify
+    type: emit
+    event: "analysis.done"
+    payload:
+      verified: verify.output
+      reported: report.output
+```
+
+Here, `parallel:` runs verify and report concurrently (replacing the fan-out). The `emit` at the end publishes a completion event that other workflows or external systems can consume. If the branches needed to coordinate mid-execution, you could add `wait` steps inside each branch.
+
+### Cyclic rotation with events
+
+Ralph's mob-programming pattern (navigator, driver, observer) rotates through roles with events carrying feedback between them. This pattern benefits from events even in duckflux, because each role's output influences the next in a non-linear way.
+
+**Ralph Orchestrator:**
+```yaml
+hats:
+  navigator:
+    triggers: ["mob.start", "observation.noted"]
+    publishes: ["direction.set"]
+  driver:
+    triggers: ["direction.set"]
+    publishes: ["code.written"]
+  observer:
+    triggers: ["code.written"]
+    publishes: ["observation.noted", "mob.complete"]
+```
+
+**duckflux:**
+```yaml
+participants:
+  navigate:
+    type: exec
+    run: cat PROMPT_NAVIGATE.md | $AGENT
+
+  drive:
+    type: exec
+    run: cat PROMPT_DRIVE.md | $AGENT
+
+  observe:
+    type: exec
+    run: cat PROMPT_OBSERVE.md | $AGENT
+
+flow:
+  - loop:
+      until: observe.output.complete == true
+      max: 10
+      steps:
+        - navigate
+        - drive
+        - observe
+```
+
+The I/O chain passes each step's output as input to the next. The observer's output feeds back to the navigator on the next iteration via the chain. No events needed here because the data flows linearly within the loop.
+
+### Backpressure: prompt-injected vs. real gates
+
+This is the biggest philosophical difference between the two systems.
+
+**Ralph Orchestrator** enforces quality through prompt instructions and guardrails. The agent is *told* to run tests, and the hat instructions say "Before emitting build.done, you MUST have: tests: pass, lint: pass." But the agent could emit `build.done` anyway. The backpressure is advisory.
+
+```yaml
+core:
+  guardrails:
+    - "Tests must pass before declaring done"
+    - "Never skip linting"
+
+hats:
+  builder:
+    instructions: |
+      Before emitting build.done:
+      - tests: pass
+      - lint: pass
+      - typecheck: pass
+```
+
+**duckflux** enforces quality through actual steps. If `npm test` returns a non-zero exit code, the flow fails. The agent can't bypass the gate because the gate isn't a prompt instruction. It's a real command.
+
+```yaml
+flow:
+  - as: build
+    type: exec
+    run: cat PROMPT_BUILD.md | $AGENT
+
+  - as: test
+    type: exec
+    run: npm test
+
+  - as: lint
+    type: exec
+    run: npm run lint
+
+  - as: typecheck
+    type: exec
+    run: npx tsc --noEmit
+```
+
+You can combine both approaches: let the agent run tests during its iteration (for fast feedback), and then verify with a dedicated step in the flow (for guaranteed enforcement).
+
+---
+
+## When to use events vs. explicit flow
+
+Not every Ralph event pattern needs to become a duckflux event. Here's a rule of thumb:
+
+| Pattern in Ralph | duckflux equivalent | Why |
+|---|---|---|
+| Linear pipeline (`A -> B -> C`) | Sequential flow | Deterministic order doesn't need events. |
+| Feedback loop (`critic -> builder -> critic`) | `loop` + `until` | Exit condition is declared, not event-inferred. |
+| Conditional routing (`passed` vs `rejected`) | `if` / `when` | Flow constructs handle branching explicitly. |
+| Cross-branch signaling | `emit` + `wait` | Parallel branches that need to coordinate. |
+| Cross-workflow communication | `emit` + `wait` (shared event hub) | Parent/child workflows exchanging signals. |
+| External system notifications | `emit` (with event hub provider) | Fire-and-forget or acknowledged delivery to Kafka, NATS, etc. |
+
+---
+
+## What you gain
+
+| Concern | Ralph Orchestrator | duckflux |
+|---|---|---|
+| **Flow readability** | Trace event graph mentally | Read YAML top to bottom |
+| **Routing control** | Agent decides which event to emit | Flow constructs (`if`, `when`, `loop`) |
+| **Quality gates** | Prompt instructions (advisory) | Real steps with exit codes (enforced) |
+| **Retry** | Global `max_iterations` | Per-step `retry.max` with backoff |
+| **Parallel** | Git worktrees + `features.parallel` | `parallel:` construct, single trace |
+| **Event system** | Core coordination model | Opt-in for cross-branch/cross-workflow |
+| **Agent coupling** | Every hat invokes an agent | Mix agents, shell, HTTP, sub-workflows |
+| **State passing** | Event payloads + filesystem | I/O chain + `execution.context` |
+| **Observation** | TUI + web dashboard | [Web server UI](/tooling/web-server-ui/) with trace viewer + real-time SSE |
+
+## What you lose
+
+To be fair about the tradeoffs:
+
+- **Memory system.** Ralph's memories persist learnings across sessions. duckflux doesn't manage agent memory; you'd handle that in your prompts or agent configuration.
+- **TUI.** Ralph provides a real-time terminal UI for monitoring loops. duckflux has a [web server UI](/tooling/web-server-ui/) with a trace viewer, execution history, and real-time SSE updates, but no embedded TUI.
+- **Preset library.** Ralph ships 31 presets for common patterns. duckflux workflows are written from scratch (or copied from docs like this one).
+- **Agent-aware prompting.** Ralph injects hat instructions, guardrails, and memory context into each agent invocation. duckflux orchestrates commands; what goes into the prompt is up to you.
+
+---
+
+## Getting started
+
+1. **Install the runtime:**
+
+```bash
+bun add -g @duckflux/runner
+```
+
+2. **Map your ralph.yml hats** to duckflux participants. Each hat becomes a participant with `type: exec` (or `http`, `workflow`, etc.).
+
+3. **Replace event topology with flow constructs.** Linear chains become sequential steps. Feedback loops become `loop` + `until`. Conditional routing becomes `if` or `when`.
+
+4. **Keep events where they add value.** Cross-branch signaling, external notifications, and workflow-to-workflow communication use `emit` + `wait`.
+
+5. **Move backpressure from prompts to steps.** Add `npm test`, `npm run lint`, etc. as explicit participants in the flow.
+
+6. **Run it:**
+
+```bash
+duckflux run my-workflow.flux.yaml
+```
+
+<Aside type="tip">
+Start by migrating a pipeline preset (linear, no feedback loops). Once the basic flow works, add `loop` + `until` for the feedback patterns. Save event-based patterns (`emit`/`wait`) for last.
+</Aside>
+
+---
+
+## Final thoughts
+
+Ralph Orchestrator's event-driven model is a real innovation for multi-agent coordination. The hat system, the typed events, the backpressure philosophy (Tenet #2: "create gates that reject bad work") are solid ideas.
+
+duckflux takes a different bet: most of the time, you know the execution order. When you do, explicit flow is easier to read, debug, and maintain than event topology. And when you genuinely need decoupled coordination, `emit` + `wait` are there.
+
+The question isn't "which tool is more powerful." It's "how much of your workflow is actually non-deterministic?" If the answer is "not much," explicit flow wins. If you're orchestrating five agents that genuinely need to signal each other asynchronously, Ralph's model has merit. duckflux gives you the choice.
