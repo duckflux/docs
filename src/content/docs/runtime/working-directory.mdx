@@ -1,0 +1,127 @@
+---
+title: Working directory
+description: How duckflux resolves the working directory for exec participants — the three levels and their precedence.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+The working directory (`cwd`) controls where `exec` participants run their shell commands. Duckflux resolves it through three levels, each overriding the previous.
+
+---
+
+## Precedence levels
+
+The runtime evaluates working directory from **lowest to highest** priority:
+
+1. **Process working directory** — the directory from which you invoke `quack run`. This is the implicit default when nothing else is configured.
+
+2. **CLI `--cwd` flag** — sets a base directory for the entire execution, overriding the process directory. Useful when the workflow file lives in a different location from the project it operates on.
+
+   ```bash
+   quack run workflow.yaml --cwd /workspace/my-project
+   ```
+
+3. **`defaults.cwd`** — declared in the workflow file itself. Applies to all `exec` participants that don't define their own `cwd`.
+
+   ```yaml
+   defaults:
+     cwd: ./repo
+   ```
+
+4. **`participant.cwd`** — set on an individual participant. Has the highest priority, overriding all other levels.
+
+   ```yaml
+   participants:
+     build:
+       type: exec
+       run: npm run build
+       cwd: ./packages/frontend
+   ```
+
+<Aside type="tip">
+  The `cwd` field on participants and `defaults.cwd` both support CEL expressions, allowing dynamic path resolution at runtime. For example: `cwd: workflow.inputs.packagePath`.
+</Aside>
+
+---
+
+## How they combine
+
+| Level | Set by | Scope |
+|-------|--------|-------|
+| Process cwd | OS / shell | All participants (implicit) |
+| `--cwd` | CLI flag | All participants |
+| `defaults.cwd` | Workflow file | All `exec` participants |
+| `participant.cwd` | Participant definition | Single participant |
+
+A higher-priority level completely replaces lower ones. They do not merge or concatenate.
+
+---
+
+## Common patterns
+
+### Workflow that operates on a repository clone
+
+```yaml
+defaults:
+  cwd: ./repo
+
+flow:
+  - type: exec
+    run: git clone $REPO_URL .
+
+  - type: exec
+    run: npm install
+
+  - type: exec
+    run: npm test
+```
+
+All three steps execute inside `./repo`.
+
+### Per-participant overrides in a monorepo
+
+```yaml
+defaults:
+  cwd: ./repo
+
+participants:
+  buildFrontend:
+    type: exec
+    run: npm run build
+    cwd: ./repo/packages/frontend
+
+  buildBackend:
+    type: exec
+    run: npm run build
+    cwd: ./repo/packages/backend
+
+flow:
+  - type: exec
+    run: npm install
+  - parallel:
+      - buildFrontend
+      - buildBackend
+```
+
+The `npm install` runs in `./repo` (from `defaults.cwd`), while each build step overrides with its own path.
+
+### Dynamic cwd from inputs
+
+```yaml
+inputs:
+  packagePath:
+    type: string
+
+flow:
+  - type: exec
+    run: npm run build
+    cwd: workflow.inputs.packagePath
+```
+
+The caller decides which directory to use at runtime.
+
+---
+
+## Sub-workflows
+
+When using `type: workflow`, paths in the sub-workflow's `defaults.cwd` and `participant.cwd` are resolved **relative to the sub-workflow file's directory**, not the parent's working directory. See [Nested workflows](/workflows/nested-workflows/) for details.

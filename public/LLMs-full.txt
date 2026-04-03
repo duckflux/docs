@@ -221,14 +221,14 @@ That's a complete, runnable workflow. No metadata, no configuration, no schema. 
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `version` | no | string | Spec version. Default: `"0.3"`. |
-| `id` | no | string | Unique identifier for the workflow definition. |
-| `name` | no | string | Human-readable name. |
-| `defaults` | no | object | Global defaults applied to all participants. |
-| `inputs` | no | object | Parameters the workflow accepts from its caller. |
-| `participants` | no | object | Named, reusable step definitions. |
-| `flow` | **yes** | array | The execution sequence. |
-| `output` | no | string or object | Final result mapping. Defaults to the last step's output. |
+| [`version`](#version) | no | string | Spec version. Default: `"0.3"`. |
+| [`id`](#id-and-name) | no | string | Unique identifier for the workflow definition. |
+| [`name`](#id-and-name) | no | string | Human-readable name. |
+| [`defaults`](#defaults) | no | object | Global defaults applied to all participants. |
+| [`inputs`](#inputs) | no | object | Parameters the workflow accepts from its caller. |
+| [`participants`](#participants) | no | object | Named, reusable step definitions. |
+| [`flow`](#flow) | **yes** | array | The execution sequence. |
+| [`output`](#output) | no | string or object | Final result mapping. Defaults to the last step's output. |
 
 ---
 
@@ -272,15 +272,21 @@ defaults:
 | `timeout` | duration | Default maximum execution time per step. |
 | `cwd` | string | Default working directory for `exec` participants. |
 
-**Timeout precedence:**
-```
-flow-level > participant-level > defaults > runtime default (no timeout)
-```
+**Timeout precedence** (highest to lowest):
 
-**Working directory precedence:**
-```
-participant.cwd > defaults.cwd > CLI --cwd > process cwd
-```
+1. Flow-level override
+2. Participant-level
+3. `defaults.timeout`
+4. Runtime default (no timeout)
+
+**Working directory precedence** (highest to lowest):
+
+1. `participant.cwd`
+2. `defaults.cwd`
+3. CLI `--cwd` flag
+4. Process working directory
+
+See [Working directory](/runtime/working-directory/) for details.
 
 <Aside type="tip">
   Set `defaults.timeout` to a conservative value for all workflows that talk to external services or run long commands. It prevents a stuck step from blocking the entire execution indefinitely.
@@ -506,7 +512,7 @@ output:
 
 ---
 
-# Participants
+# Using participants
 > The atomic unit of work in duckflux — how to define, name, and reuse participants across your workflows.
 
 
@@ -797,11 +803,7 @@ Runs a shell command in the host environment. Use this for builds, tests, lintin
   </TabItem>
 </Tabs>
 
-The `cwd` field accepts either a literal path or a CEL expression. Precedence for working directory resolution:
-
-```
-participant.cwd > defaults.cwd > CLI --cwd > process cwd
-```
+The `cwd` field accepts either a literal path or a CEL expression. See [Working directory](/runtime/working-directory/) for the full precedence rules.
 
 <Aside type="tip">
   The output of an `exec` participant is the stdout of the command. If stdout is valid JSON, the runtime will parse it automatically — making fields accessible as `<step>.output.<field>` in downstream CEL expressions.
@@ -1174,7 +1176,7 @@ inputs:
 | `type` | JSON Schema type: `string`, `integer`, `number`, `boolean`, `array`, `object` |
 | `default` | Value used when the caller does not provide the field |
 | `required` | If `true`, the runner rejects the workflow when the field is missing |
-| `description` | Human-readable description (used in `duckflux validate` output) |
+| `description` | Human-readable description (used in `quack validate` output) |
 | `format` | String format hint: `uri`, `date`, `email`, etc. |
 | `minimum` / `maximum` | Numeric bounds |
 | `items` | Schema for array items |
@@ -1185,13 +1187,13 @@ Inputs can be provided via the CLI in three equivalent ways (highest priority wi
 
 ```bash
 # Inline flags
-duckflux run deploy.duck.yaml --input branch=main --input env=staging
+quack run deploy.duck.yaml --input branch=main --input env=staging
 
 # JSON file
-duckflux run deploy.duck.yaml --input-file inputs.json
+quack run deploy.duck.yaml --input-file inputs.json
 
 # Piped JSON via stdin
-echo '{"branch": "main", "env": "staging"}' | duckflux run deploy.duck.yaml
+echo '{"branch": "main", "env": "staging"}' | quack run deploy.duck.yaml
 ```
 
 Resolution priority: `--input` flags > `--input-file` > stdin.
@@ -3271,7 +3273,7 @@ flow:
 ```
 
 <Aside type="caution">
-  To **isolate** a sub-workflow's events from the parent, run it as a separate `duckflux run` process instead of a `type: workflow` participant.
+  To **isolate** a sub-workflow's events from the parent, run it as a separate `quack run` process instead of a `type: workflow` participant.
 </Aside>
 
 ---
@@ -3824,13 +3826,13 @@ In the parent workflow, `reviewCycle.output.approved`, `reviewCycle.output.score
 Sub-workflows behave like any other step from the parent's perspective, but run with their own isolated context:
 
 - **Isolated `execution.context`** — the sub-workflow gets its own scratchpad, separate from the parent. Data does not leak between them.
-- **Shared event hub** — the parent's [event hub](/workflows/events/) is passed down to all sub-workflows. Events emitted by the parent are visible to sub-workflows and vice versa. To isolate events, run the sub-workflow as a separate `duckflux run` process instead.
+- **Shared event hub** — the parent's [event hub](/workflows/events/) is passed down to all sub-workflows. Events emitted by the parent are visible to sub-workflows and vice versa. To isolate events, run the sub-workflow as a separate `quack run` process instead.
 - **`onError` and `timeout` apply to the whole sub-workflow** — if the sub-workflow exceeds its timeout or fails, the parent's `onError` strategy for that step applies.
 - **Nesting is supported** — a sub-workflow can itself call other sub-workflows. There is no hard depth limit, but deep nesting adds complexity.
 - **Path resolution** — paths in `path` are resolved relative to the parent workflow file's directory, not the working directory at runtime.
 
 <Aside type="caution">
-  Circular references (workflow A calls workflow B which calls workflow A) are not detected at parse time by JSON Schema validation — they will cause a runtime error. The linter (`duckflux lint`) performs this check. See [Tooling](/tooling/).
+  Circular references (workflow A calls workflow B which calls workflow A) are not detected at parse time by JSON Schema validation — they will cause a runtime error. The linter (`quack lint`) performs this check. See [Tooling](/tooling/).
 </Aside>
 
 ---
@@ -3988,24 +3990,24 @@ Each sub-workflow encapsulates its own logic, inputs, and outputs. The parent pi
 
 Duckflux workflows are plain YAML files — they don't run on their own. You need a **runtime** to execute them.
 
-The official runtime is the **JavaScript runtime**, written in TypeScript and targeting Node.js and Bun.
+The official runtime is written in TypeScript and targets Node.js and Bun.
 
-<LinkCard title="JavaScript Runtime" href="/javascript-runtime/installation/" description="TypeScript runtime for Node.js and Bun." />
+<LinkCard title="Runtime" href="/runtime/cli/" description="Install and use the duckflux CLI." />
 
 ---
 
 ## Install the runtime
 
-See the [JavaScript runtime installation guide](/javascript-runtime/installation/) for setup instructions.
+See the [CLI installation guide](/runtime/cli/#installation) for setup instructions.
 
 ---
 
 ## Run a workflow
 
-Once a runtime is installed, use `quack` to run any `.duck.yaml` file:
+Once the runtime is installed, use `quack run` to run any `.duck.yaml` file:
 
 ```sh
-quack hello.duck.yaml
+quack run hello.duck.yaml
 ```
 
 That's the full command. The runtime reads the file, executes the flow, and prints the output.
@@ -4015,13 +4017,13 @@ That's the full command. The runtime reads the file, executes the flow, and prin
 Use `--cwd` to set the base working directory for `exec` participants:
 
 ```sh
-quack deploy.duck.yaml --cwd ./repo
+quack run deploy.duck.yaml --cwd ./repo
 ```
 
 This is equivalent to setting `defaults.cwd` in the workflow file itself, but applied from the command line. Useful when the workflow is shared but the working directory varies per environment.
 
 <Aside type="tip">
-  The `--cwd` flag sets the base directory. Individual participants can still override it with their own `cwd` field. See [Workflow files](/workflows/) for the full precedence rules.
+  The `--cwd` flag sets the base directory. Individual participants can still override it with their own `cwd` field. See [Working directory](/runtime/working-directory/) for the full precedence rules.
 </Aside>
 
 ---
@@ -4030,10 +4032,10 @@ This is equivalent to setting `defaults.cwd` in the workflow file itself, but ap
 > How to use the DuckFlux CLI to run workflows.
 
 
-The `@duckflux/runner` package ships a `duckflux` binary that lets you run, lint, and validate workflows from the command line.
+The `@duckflux/runner` package ships a `quack` binary that lets you run, lint, and validate workflows from the command line.
 
 ```bash
-duckflux <command> <workflow.yaml> [flags]
+quack <command> <workflow.yaml> [flags]
 ```
 
 ---
@@ -4057,7 +4059,7 @@ duckflux <command> <workflow.yaml> [flags]
     Install via [Homebrew](https://brew.sh):
 
     ```bash
-    brew install duckflux/tap/duckflux-js
+    brew install duckflux/tap/quack
     ```
   </TabItem>
 
@@ -4065,11 +4067,12 @@ duckflux <command> <workflow.yaml> [flags]
     Install via apt:
 
     ```bash
+    curl -fsSL https://duckflux.github.io/apt-repo/install.sh | bash
     ```
   </TabItem>
 
   <TabItem label="Generic (npm/Bun)">
-    Install globally so `duckflux` is available everywhere on your machine.
+    Install globally so `quack` is available everywhere on your machine.
 
     ```bash
     # npm
@@ -4082,7 +4085,7 @@ duckflux <command> <workflow.yaml> [flags]
     Verify:
 
     ```bash
-    duckflux version
+    quack version
     ```
   </TabItem>
 
@@ -4091,20 +4094,20 @@ duckflux <command> <workflow.yaml> [flags]
 
     | Platform | File |
     |---|---|
-    | macOS ARM64 (Apple Silicon) | `duckflux-darwin-arm64` |
-    | macOS x64 (Intel) | `duckflux-darwin-x64` |
-    | Linux x64 | `duckflux-linux-x64` |
-    | Linux ARM64 | `duckflux-linux-arm64` |
-    | Windows x64 | `duckflux-windows-x64.exe` |
+    | macOS ARM64 (Apple Silicon) | `quack-darwin-arm64` |
+    | macOS x64 (Intel) | `quack-darwin-x64` |
+    | Linux x64 | `quack-linux-x64` |
+    | Linux ARM64 | `quack-linux-arm64` |
+    | Windows x64 | `quack-windows-x64.exe` |
 
     **macOS / Linux:**
 
     ```bash
     # Example for macOS ARM64 — replace the filename for your platform
-    curl -fsSL https://github.com/duckflux/runtime-js/releases/latest/download/duckflux-darwin-arm64 \
-      -o /usr/local/bin/duckflux
-    chmod +x /usr/local/bin/duckflux
-    duckflux version
+    curl -fsSL https://github.com/duckflux/runtime-js/releases/latest/download/quack-darwin-arm64 \
+      -o /usr/local/bin/quack
+    chmod +x /usr/local/bin/quack
+    quack version
     ```
 
     **Windows:** download the `.exe`, place it somewhere on your `%PATH%`, and run it directly.
@@ -4130,13 +4133,13 @@ duckflux <command> <workflow.yaml> [flags]
 Executes a workflow from a YAML file and prints the result to `stdout`.
 
 ```bash
-duckflux run <workflow.yaml> [flags]
+quack run <workflow.yaml> [flags]
 ```
 
 `run` is the default command — if the first positional argument is a `.yaml` file and no subcommand is given, it is implied:
 
 ```bash
-duckflux workflow.yaml   # same as: duckflux run workflow.yaml
+quack workflow.yaml   # same as: quack run workflow.yaml
 ```
 
 ### Flags
@@ -4145,7 +4148,7 @@ duckflux workflow.yaml   # same as: duckflux run workflow.yaml
 |------|-------|------|---------|-------------|
 | `--input` | `-i` | string | — | Input as `key=value`. Repeatable. Values are JSON-parsed, falling back to strings. |
 | `--input-file` | — | string | — | Path to a JSON file containing workflow inputs. |
-| `--cwd` | — | string | — | Working directory used for `exec` participants. |
+| `--cwd` | — | string | — | Working directory for `exec` participants. See [Working directory](/runtime/working-directory/). |
 | `--event-backend` | — | string | `memory` | Event hub backend: `memory`, `nats`, or `redis`. |
 | `--nats-url` | — | string | — | NATS server URL. Required when `--event-backend=nats`. |
 | `--nats-stream` | — | string | `duckflux-events` | JetStream stream name. |
@@ -4195,35 +4198,35 @@ Values are JSON-parsed first, falling back to plain strings:
 
 ```bash
 # Basic execution
-duckflux run workflow.yaml
+quack run workflow.yaml
 
 # Pass inputs
-duckflux run workflow.yaml --input name=World --input count=3
+quack run workflow.yaml --input name=World --input count=3
 
 # Inputs from file
-duckflux run workflow.yaml --input-file inputs.json
+quack run workflow.yaml --input-file inputs.json
 
 # Piped inputs
-cat inputs.json | duckflux run workflow.yaml
+cat inputs.json | quack run workflow.yaml
 
 # Custom working directory with verbose errors
-duckflux run workflow.yaml --cwd /workspace --verbose
+quack run workflow.yaml --cwd /workspace --verbose
 
 # NATS event backend
-duckflux run workflow.yaml \
+quack run workflow.yaml \
   --event-backend=nats \
   --nats-url=nats://localhost:4222
 
 # Redis event backend
-duckflux run workflow.yaml \
+quack run workflow.yaml \
   --event-backend=redis \
   --redis-addr=localhost:6379
 
 # Write a JSON trace for each run
-duckflux run workflow.yaml --trace-dir ./traces
+quack run workflow.yaml --trace-dir ./traces
 
 # Write a SQLite trace (all runs in separate DB files)
-duckflux run workflow.yaml --trace-dir ./traces --trace-format sqlite
+quack run workflow.yaml --trace-dir ./traces --trace-format sqlite
 ```
 
 ### Tracing
@@ -4237,7 +4240,7 @@ Use `--trace-dir` to capture a structured execution record for each run. See [Ex
 Validates a workflow file without executing it. Checks schema correctness, semantic consistency, and common authoring issues.
 
 ```bash
-duckflux lint <workflow.yaml>
+quack lint <workflow.yaml>
 ```
 
 ### Checks performed
@@ -4261,13 +4264,13 @@ If all checks pass, `valid` is printed to `stdout`. Errors and warnings go to `s
 ### Example
 
 ```bash
-duckflux lint workflow.yaml
+quack lint workflow.yaml
 
 # CI-friendly: capture all output
-duckflux lint workflow.yaml 2>&1
+quack lint workflow.yaml 2>&1
 
 # Check exit code
-if duckflux lint workflow.yaml; then
+if quack lint workflow.yaml; then
   echo "Ready to run"
 fi
 ```
@@ -4279,7 +4282,7 @@ fi
 Performs the same checks as [`lint`](#lint), and additionally validates provided inputs against the workflow's declared `inputs` schema.
 
 ```bash
-duckflux validate <workflow.yaml> [flags]
+quack validate <workflow.yaml> [flags]
 ```
 
 ### Flags
@@ -4308,16 +4311,16 @@ duckflux validate <workflow.yaml> [flags]
 
 ```bash
 # Validate structure only
-duckflux validate workflow.yaml
+quack validate workflow.yaml
 
 # Validate structure + inputs
-duckflux validate workflow.yaml --input name=World --input count=3
+quack validate workflow.yaml --input name=World --input count=3
 
 # Inputs from file
-duckflux validate workflow.yaml --input-file test-inputs.json
+quack validate workflow.yaml --input-file test-inputs.json
 
 # Piped inputs
-echo '{"name":"World"}' | duckflux validate workflow.yaml
+echo '{"name":"World"}' | quack validate workflow.yaml
 ```
 
 ---
@@ -4327,7 +4330,7 @@ echo '{"name":"World"}' | duckflux validate workflow.yaml
 Starts the duckflux web server UI — a local dev tool for executing and observing workflows visually. See [Web Server UI](/tooling/web-server-ui/) for a full feature walkthrough with screenshots.
 
 ```bash
-duckflux server [flags]
+quack server [flags]
 ```
 
 ### Flags
@@ -4352,10 +4355,10 @@ Answering **Y** runs `bun add @duckflux/server -D` (falling back to `npm install
 
 ```bash
 # Start with trace output directory
-duckflux server --trace-dir ./traces
+quack server --trace-dir ./traces
 
 # Custom workflow directory and port
-duckflux server --trace-dir ./traces --workflow-dir ./workflows --port 8080
+quack server --trace-dir ./traces --workflow-dir ./workflows --port 8080
 ```
 
 <Aside type="tip">
@@ -4369,8 +4372,8 @@ duckflux server --trace-dir ./traces --workflow-dir ./workflows --port 8080
 Prints the CLI version to `stdout`.
 
 ```bash
-duckflux version
-# 0.6.0
+quack version
+# 0.7.0
 ```
 
 Always exits with code `0`.
@@ -4477,10 +4480,10 @@ The hub is optional — you only need one if your workflow uses `emit` or `wait.
     #### CLI usage
 
     ```bash
-    duckflux run workflow.yaml
+    quack run workflow.yaml
     # --event-backend defaults to "memory", no flag required
 
-    duckflux run workflow.yaml --event-backend=memory
+    quack run workflow.yaml --event-backend=memory
     ```
   </TabItem>
 
@@ -4520,12 +4523,12 @@ The hub is optional — you only need one if your workflow uses `emit` or `wait.
     #### CLI usage
 
     ```bash
-    duckflux run workflow.yaml \
+    quack run workflow.yaml \
       --event-backend=nats \
       --nats-url=nats://localhost:4222
 
     # With a custom stream name
-    duckflux run workflow.yaml \
+    quack run workflow.yaml \
       --event-backend=nats \
       --nats-url=nats://localhost:4222 \
       --nats-stream=my-stream
@@ -4590,12 +4593,12 @@ The hub is optional — you only need one if your workflow uses `emit` or `wait.
     #### CLI usage
 
     ```bash
-    duckflux run workflow.yaml \
+    quack run workflow.yaml \
       --event-backend=redis \
       --redis-addr=localhost:6379
 
     # With custom options
-    duckflux run workflow.yaml \
+    quack run workflow.yaml \
       --event-backend=redis \
       --redis-addr=redis.internal:6379 \
       --redis-db=2
@@ -4714,7 +4717,7 @@ The runtime is split into four packages:
 | Package | Version | Purpose |
 |---------|---------|---------|
 | [`@duckflux/core`](https://www.npmjs.com/package/@duckflux/core) | [![npm](https://img.shields.io/npm/v/%40duckflux%2Fcore)](https://www.npmjs.com/package/@duckflux/core) | Engine, parser, CEL evaluator, in-memory event hub. The only required package. |
-| [`@duckflux/runner`](https://www.npmjs.com/package/@duckflux/runner) | [![npm](https://img.shields.io/npm/v/%40duckflux%2Frunner)](https://www.npmjs.com/package/@duckflux/runner) | CLI binary (`duckflux run`, `lint`, `validate`). Exposes `@duckflux/core` in CLI. |
+| [`@duckflux/runner`](https://www.npmjs.com/package/@duckflux/runner) | [![npm](https://img.shields.io/npm/v/%40duckflux%2Frunner)](https://www.npmjs.com/package/@duckflux/runner) | CLI binary (`quack run`, `lint`, `validate`). Exposes `@duckflux/core` in CLI. |
 | [`@duckflux/hub-nats`](https://www.npmjs.com/package/@duckflux/hub-nats) | [![npm](https://img.shields.io/npm/v/%40duckflux%2Fhub-nats)](https://www.npmjs.com/package/@duckflux/hub-nats) | Optional NATS JetStream event hub backend. |
 | [`@duckflux/hub-redis`](https://www.npmjs.com/package/@duckflux/hub-redis) | [![npm](https://img.shields.io/npm/v/%40duckflux%2Fhub-redis)](https://www.npmjs.com/package/@duckflux/hub-redis) | Optional Redis Streams event hub backend. |
 
@@ -5693,7 +5696,7 @@ bun add -g @duckflux/runner
 6. **Run it:**
 
 ```bash
-duckflux run my-workflow.duck.yaml
+quack run my-workflow.duck.yaml
 ```
 
 <Aside type="tip">
@@ -5758,7 +5761,7 @@ The implication: for most pipelines, you can extract the `run:` commands and the
 | GitHub Actions | duckflux | Notes |
 |---|---|---|
 | `.github/workflows/*.yml` | `.duck.yaml` file | Both are declarative YAML. |
-| `on:` triggers | External trigger (cron, webhook, CLI) | duckflux is a runner, not a CI platform. Trigger via `crontab`, webhook, or `duckflux run`. |
+| `on:` triggers | External trigger (cron, webhook, CLI) | duckflux is a runner, not a CI platform. Trigger via `crontab`, webhook, or `quack run`. |
 | `workflow_dispatch` inputs | `inputs:` with JSON Schema | duckflux validates at parse time. Supports `type`, `default`, `required`, `minimum`, `maximum`. |
 | jobs | participants | Named, reusable step definitions. |
 | steps with `run:` | `type: exec` with `run:` | Direct equivalent. |
@@ -5772,7 +5775,7 @@ The implication: for most pipelines, you can extract the `run:` commands and the
 | reusable workflows | `type: workflow` + `path:` | Sub-workflows share the event hub (GHA reusable workflows are isolated). |
 | artifacts | I/O chain | stdout of step N becomes stdin of step N+1. No files, no template syntax. |
 | `working-directory` | `cwd:` | Supports CEL expressions (e.g. `workflow.inputs.packagePath`). |
-| concurrency groups | No equivalent | Multiple `duckflux run` invocations run independently. |
+| concurrency groups | No equivalent | Multiple `quack run` invocations run independently. |
 | `services:` | Not in scope | Use Docker Compose in a setup step. |
 
 ---
@@ -5855,7 +5858,7 @@ The implication: for most pipelines, you can extract the `run:` commands and the
 
 Key differences:
 
-- **No checkout/setup actions.** You run duckflux where the code already exists (your machine, a pre-configured container, a self-hosted runner). Checkout and setup happen before `duckflux run`.
+- **No checkout/setup actions.** You run duckflux where the code already exists (your machine, a pre-configured container, a self-hosted runner). Checkout and setup happen before `quack run`.
 - **Lint and test run in parallel.** In GHA, steps within a job are sequential. To parallelize, you need separate jobs with `needs:`. In duckflux, `parallel:` is a flow construct.
 - **`when` replaces `if:`.** The deploy step only runs when the ref is `main`. Same logic, declarative guard.
 - **No `runs-on:`.** duckflux runs wherever you invoke it.
@@ -6065,7 +6068,7 @@ The sub-workflow emits `db.ready` mid-execution. The parent reacts immediately. 
 
 **Caching.** `actions/cache` stores dependency caches across runs. duckflux has no cache primitive. You manage caching at the OS or container layer.
 
-**Concurrency groups.** GHA prevents concurrent runs of the same workflow with `concurrency:`. duckflux has no equivalent. Multiple `duckflux run` invocations run independently.
+**Concurrency groups.** GHA prevents concurrent runs of the same workflow with `concurrency:`. duckflux has no equivalent. Multiple `quack run` invocations run independently.
 
 **Container services.** GHA's `services:` spins up sidecar containers (PostgreSQL, Redis) alongside your job. duckflux does not manage containers. Use `docker compose up` in a setup step.
 
@@ -6096,7 +6099,7 @@ jobs:
         run: npm install -g @duckflux/runner
 
       - name: Run pipeline
-        run: duckflux run ci-pipeline.duck.yaml
+        run: quack run ci-pipeline.duck.yaml
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
           NODE_ENV: production
@@ -6108,13 +6111,13 @@ The `.duck.yaml` file is portable. You can run the exact same file locally:
 
 ```bash
 export DEPLOY_TOKEN=my-local-token
-duckflux run ci-pipeline.duck.yaml
+quack run ci-pipeline.duck.yaml
 ```
 
 No need for `act` or other GHA emulators. The workflow runs the same everywhere because it's just shell commands orchestrated by a spec.
 
 <Aside type="tip">
-This hybrid approach lets you migrate incrementally. Move one job at a time from GHA YAML to a `.duck.yaml` file. Keep the GHA workflow as a thin wrapper that triggers `duckflux run`.
+This hybrid approach lets you migrate incrementally. Move one job at a time from GHA YAML to a `.duck.yaml` file. Keep the GHA workflow as a thin wrapper that triggers `quack run`.
 </Aside>
 
 ---
@@ -6138,13 +6141,13 @@ bun add -g @duckflux/runner
 6. **Run locally:**
 
 ```bash
-duckflux run my-pipeline.duck.yaml
+quack run my-pipeline.duck.yaml
 ```
 
 7. **Observe** via the [web server UI](/tooling/web-server-ui/):
 
 ```bash
-duckflux server --trace-dir ./traces
+quack server --trace-dir ./traces
 ```
 
 <Aside type="tip">
@@ -6540,10 +6543,10 @@ bun add -g @duckflux/runner
 5. **Run it:**
 
 ```bash
-duckflux run my-pipeline.duck.yaml
+quack run my-pipeline.duck.yaml
 ```
 
-6. **Observe** via `duckflux server --trace-dir ./traces` for a visual trace of every step.
+6. **Observe** via `quack server --trace-dir ./traces` for a visual trace of every step.
 
 <Aside type="tip">
 Keep using Claude Sub-agents for interactive exploration and ad-hoc tasks. Use duckflux for the workflows you've already figured out and want to run reliably, repeatably, and without babysitting.
@@ -6849,7 +6852,7 @@ bun add -g @duckflux/runner
 3. **Run it:**
 
 ```bash
-duckflux run codegen-loop.duck.yaml
+quack run codegen-loop.duck.yaml
 ```
 
 4. **Inspect the trace** to see exactly what happened at each step.
@@ -6872,7 +6875,7 @@ The best prompt in the world still needs an orchestrator. That's what duckflux i
 > A local web-based dev tool for executing and observing duckflux workflows in real time.
 
 
-The **duckflux server** is a local web UI for running and inspecting workflows — think GitHub Actions, but for your duckflux flows. It ships as the `@duckflux/server` package and is launched via the [`duckflux server`](/runtime/cli/#server) CLI command.
+The **quack server** is a local web UI for running and inspecting workflows — think GitHub Actions, but for your duckflux flows. It ships as the `@duckflux/server` package and is launched via the [`quack server`](/runtime/cli/#server) CLI command.
 
 ![Workflow list in dark mode](../../../assets/server/workflows-dark.png)
 
@@ -6882,7 +6885,7 @@ The **duckflux server** is a local web UI for running and inspecting workflows �
 
 ```bash
 # 1. Make sure you have trace output enabled
-duckflux server --trace-dir ./traces --workflow-dir ./workflows
+quack server --trace-dir ./traces --workflow-dir ./workflows
 
 # 2. Open the UI
 #    → http://localhost:3000
@@ -6901,7 +6904,7 @@ The server scans `--workflow-dir` for `.yaml` / `.yml` files and watches `--trac
 | `--port` | string | `3000` | HTTP port for the web UI. |
 
 <Aside type="note">
-  The `--trace-dir` flag is consistent with the [`duckflux run --trace-dir`](/runtime/cli/#flags) flag. Point both commands at the same directory to see CLI-triggered executions in the server UI.
+  The `--trace-dir` flag is consistent with the [`quack run --trace-dir`](/runtime/cli/#flags) flag. Point both commands at the same directory to see CLI-triggered executions in the server UI.
 </Aside>
 
 ---
@@ -7027,13 +7030,140 @@ The server runs as a single Next.js process — the API routes and the UI are se
 - **Binary:** `duckflux-server`
 - **Minimum runtime:** Bun 1.x or Node.js 20+
 
-The package is auto-installed by `duckflux server` when not present in the project. You can also install it manually:
+The package is auto-installed by `quack server` when not present in the project. You can also install it manually:
 
 ```bash
 bun add @duckflux/server -D
 # or
 npm install @duckflux/server --save-dev
 ```
+
+---
+
+# Working directory
+> How duckflux resolves the working directory for exec participants — the three levels and their precedence.
+
+
+The working directory (`cwd`) controls where `exec` participants run their shell commands. Duckflux resolves it through three levels, each overriding the previous.
+
+---
+
+## Precedence levels
+
+The runtime evaluates working directory from **lowest to highest** priority:
+
+1. **Process working directory** — the directory from which you invoke `quack run`. This is the implicit default when nothing else is configured.
+
+2. **CLI `--cwd` flag** — sets a base directory for the entire execution, overriding the process directory. Useful when the workflow file lives in a different location from the project it operates on.
+
+   ```bash
+   quack run workflow.yaml --cwd /workspace/my-project
+   ```
+
+3. **`defaults.cwd`** — declared in the workflow file itself. Applies to all `exec` participants that don't define their own `cwd`.
+
+   ```yaml
+   defaults:
+     cwd: ./repo
+   ```
+
+4. **`participant.cwd`** — set on an individual participant. Has the highest priority, overriding all other levels.
+
+   ```yaml
+   participants:
+     build:
+       type: exec
+       run: npm run build
+       cwd: ./packages/frontend
+   ```
+
+<Aside type="tip">
+  The `cwd` field on participants and `defaults.cwd` both support CEL expressions, allowing dynamic path resolution at runtime. For example: `cwd: workflow.inputs.packagePath`.
+</Aside>
+
+---
+
+## How they combine
+
+| Level | Set by | Scope |
+|-------|--------|-------|
+| Process cwd | OS / shell | All participants (implicit) |
+| `--cwd` | CLI flag | All participants |
+| `defaults.cwd` | Workflow file | All `exec` participants |
+| `participant.cwd` | Participant definition | Single participant |
+
+A higher-priority level completely replaces lower ones. They do not merge or concatenate.
+
+---
+
+## Common patterns
+
+### Workflow that operates on a repository clone
+
+```yaml
+defaults:
+  cwd: ./repo
+
+flow:
+  - type: exec
+    run: git clone $REPO_URL .
+
+  - type: exec
+    run: npm install
+
+  - type: exec
+    run: npm test
+```
+
+All three steps execute inside `./repo`.
+
+### Per-participant overrides in a monorepo
+
+```yaml
+defaults:
+  cwd: ./repo
+
+participants:
+  buildFrontend:
+    type: exec
+    run: npm run build
+    cwd: ./repo/packages/frontend
+
+  buildBackend:
+    type: exec
+    run: npm run build
+    cwd: ./repo/packages/backend
+
+flow:
+  - type: exec
+    run: npm install
+  - parallel:
+      - buildFrontend
+      - buildBackend
+```
+
+The `npm install` runs in `./repo` (from `defaults.cwd`), while each build step overrides with its own path.
+
+### Dynamic cwd from inputs
+
+```yaml
+inputs:
+  packagePath:
+    type: string
+
+flow:
+  - type: exec
+    run: npm run build
+    cwd: workflow.inputs.packagePath
+```
+
+The caller decides which directory to use at runtime.
+
+---
+
+## Sub-workflows
+
+When using `type: workflow`, paths in the sub-workflow's `defaults.cwd` and `participant.cwd` are resolved **relative to the sub-workflow file's directory**, not the parent's working directory. See [Nested workflows](/workflows/nested-workflows/) for details.
 
 ---
 
@@ -7051,13 +7181,13 @@ Tracing is incremental: each step is written to the file as it completes, not at
 
 ```bash
 # JSON trace (default)
-duckflux run workflow.yaml --trace-dir ./traces
+quack run workflow.yaml --trace-dir ./traces
 
 # TXT trace — human-readable sections
-duckflux run workflow.yaml --trace-dir ./traces --trace-format txt
+quack run workflow.yaml --trace-dir ./traces --trace-format txt
 
 # SQLite trace — queryable with any SQL client
-duckflux run workflow.yaml --trace-dir ./traces --trace-format sqlite
+quack run workflow.yaml --trace-dir ./traces --trace-format sqlite
 ```
 
 Output files are named `<executionId>.<ext>`:

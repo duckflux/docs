@@ -3,7 +3,7 @@ title: Exploring participants
 description: Learn about participant types and definition modes — the building blocks of every duckflux workflow.
 ---
 
-import { Aside } from '@astrojs/starlight/components';
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 Every step in a duckflux workflow is a **participant** — the atomic unit of work. Participants receive input, do something, and produce output. The `flow` is just an ordered sequence of participants.
 
@@ -76,8 +76,8 @@ Reusable participants keep the `flow` readable and the configuration in one plac
 | | Anonymous | Named inline | Reusable |
 |---|---|---|---|
 | Defined in | `flow` (no `as`) | `flow` (with `as`) | `participants` block |
-| Output addressable by name | No | Yes | Yes |
-| Can appear multiple times | No | No | Yes |
+| Output addressable by name | ❌ No | ✅ Yes | ✅ Yes |
+| Can appear multiple times | ❌ No | ❌ No | ✅ Yes |
 | Best for | Simple one-off steps | One-off named steps | Shared steps, complex config |
 
 <Aside>
@@ -90,86 +90,10 @@ Reusable participants keep the `flow` readable and the configuration in one plac
 
 The `type` field determines how a participant executes:
 
-| Type | What it does |
-|------|-------------|
-| `exec` | Runs a shell command. Output is the command's stdout. |
-| `http` | Makes an HTTP request. Supports dynamic URLs, headers, and body via CEL. |
-| `mcp` | Invokes a tool on an MCP server. |
-| `workflow` | Runs another `.duck.yaml` file as a sub-workflow. |
-| `emit` | Publishes an event to the workflow's event hub. |
-
-### `exec`
-
-The most common type. Runs any shell command:
-
-```yaml
-participants:
-  build:
-    type: exec
-    run: npm run build
-    timeout: 10m
-```
-
-If the command outputs valid JSON, it's parsed automatically — fields become accessible as `build.output.<field>` in downstream expressions.
-
-### `http`
-
-Makes an HTTP request to an external URL. All field values support CEL expressions:
-
-```yaml
-participants:
-  notify:
-    type: http
-    url: https://hooks.example.com/deploy
-    method: POST
-    headers:
-      Authorization: '"Bearer " + env.API_TOKEN'
-    body:
-      status: deploy.output.status
-    onError: skip
-```
-
-### `mcp`
-
-Delegates work to an MCP server tool:
-
-```yaml
-participants:
-  reviewer:
-    type: mcp
-    server: claude
-    tool: code_review
-    input:
-      code: coder.output
-```
-
-### `workflow`
-
-Embeds another workflow file as a step. Paths are resolved relative to the parent file:
-
-```yaml
-participants:
-  reviewCycle:
-    type: workflow
-    path: ./review-loop.duck.yaml
-    input:
-      repo: workflow.inputs.repoUrl
-```
-
-### `emit`
-
-Publishes an event. By default fire-and-forget; use `ack: true` to block until delivery:
-
-```yaml
-- as: notify
-  type: emit
-  event: "deploy.completed"
-  payload:
-    status: deploy.output.status
-  ack: true
-  timeout: 10s
-```
-
-<Aside>
-  See [Participant types](/workflows/participant-types/) for the full field reference, examples, and guidance on choosing the right type for each situation.
-</Aside>
+<CardGrid>
+  <LinkCard title="exec" href="/workflows/participant-types/#exec--shell-command" description="Runs a shell command. Output is the command's stdout." />
+  <LinkCard title="http" href="/workflows/participant-types/#http--http-request" description="Makes an HTTP request. Supports dynamic URLs, headers, and body via CEL." />
+  <LinkCard title="mcp" href="/workflows/participant-types/#mcp--mcp-tool-call" description="Invokes a tool on an MCP server." />
+  <LinkCard title="workflow" href="/workflows/participant-types/#workflow--sub-workflow" description="Runs another .duck.yaml file as a sub-workflow." />
+  <LinkCard title="emit" href="/workflows/participant-types/#emit--event" description="Publishes an event to the workflow's event hub." />
+</CardGrid>

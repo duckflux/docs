@@ -65,10 +65,10 @@ The hub is optional — you only need one if your workflow uses `emit` or `wait.
     #### CLI usage
 
     ```bash
-    duckflux run workflow.yaml
+    quack run workflow.yaml
     # --event-backend defaults to "memory", no flag required
 
-    duckflux run workflow.yaml --event-backend=memory
+    quack run workflow.yaml --event-backend=memory
     ```
   </TabItem>
 
@@ -108,12 +108,12 @@ The hub is optional — you only need one if your workflow uses `emit` or `wait.
     #### CLI usage
 
     ```bash
-    duckflux run workflow.yaml \
+    quack run workflow.yaml \
       --event-backend=nats \
       --nats-url=nats://localhost:4222
 
     # With a custom stream name
-    duckflux run workflow.yaml \
+    quack run workflow.yaml \
       --event-backend=nats \
       --nats-url=nats://localhost:4222 \
       --nats-stream=my-stream
@@ -178,12 +178,12 @@ The hub is optional — you only need one if your workflow uses `emit` or `wait.
     #### CLI usage
 
     ```bash
-    duckflux run workflow.yaml \
+    quack run workflow.yaml \
       --event-backend=redis \
       --redis-addr=localhost:6379
 
     # With custom options
-    duckflux run workflow.yaml \
+    quack run workflow.yaml \
       --event-backend=redis \
       --redis-addr=redis.internal:6379 \
       --redis-db=2

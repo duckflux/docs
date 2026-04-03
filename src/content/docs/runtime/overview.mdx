@@ -8,7 +8,7 @@ import { Aside, CardGrid, LinkCard, Badge } from '@astrojs/starlight/components'
 Run any DuckFlux workflow with a single command. Or embed the engine directly in your TypeScript app. Either way, you get the same full-featured runtime — with no vendor lock-in, no agent framework to learn, and no infrastructure to manage by default.
 
 ```bash
-duckflux run workflow.yaml --input env=production
+quack run workflow.yaml --input env=production
 ```
 
 ---
@@ -17,7 +17,7 @@ duckflux run workflow.yaml --input env=production
 
 ### CLI — zero setup
 
-Install once, run anywhere. The `duckflux` binary reads your YAML, validates it, and executes it. No code, no build step, no config files.
+Install once, run anywhere. The `quack` binary reads your YAML, validates it, and executes it. No code, no build step, no config files.
 
 ```bash
 # Run from npx/bunx without installing
@@ -25,7 +25,7 @@ bunx duckflux run workflow.yaml --input name=World
 
 # Or install globally
 bun add -g duckflux
-duckflux run workflow.yaml
+quack run workflow.yaml
 ```
 
 Works with [Bun](https://bun.sh) and Node.js. Inputs from flags, files, or stdin. Structured output to stdout. Exit codes for CI. See the [CLI reference](/runtime/cli/) for all flags.
@@ -80,10 +80,10 @@ Every run can produce a structured trace — one file per execution, written inc
 
 ```bash
 # Trace to JSON (default)
-duckflux run workflow.yaml --trace-dir ./traces
+quack run workflow.yaml --trace-dir ./traces
 
 # Query with any SQL client
-duckflux run workflow.yaml --trace-dir ./traces --trace-format sqlite
+quack run workflow.yaml --trace-dir ./traces --trace-format sqlite
 ```
 
 Each trace captures every step — participants and control-flow constructs alike — with timing, inputs, outputs, errors, and retry counts. See [Execution tracing](/runtime/tracing/) for the full format reference.
@@ -113,7 +113,7 @@ The runtime ships as focused, composable packages:
   <LinkCard
     title="CLI usage"
     href="/runtime/cli/"
-    description="Full flag reference, input sources, exit codes, and examples for the duckflux binary."
+    description="Full flag reference, input sources, exit codes, and examples for the quack CLI."
   />
   <LinkCard
     title="Library usage"

@@ -47,7 +47,7 @@ The implication: for most pipelines, you can extract the `run:` commands and the
 | GitHub Actions | duckflux | Notes |
 |---|---|---|
 | `.github/workflows/*.yml` | `.duck.yaml` file | Both are declarative YAML. |
-| `on:` triggers | External trigger (cron, webhook, CLI) | duckflux is a runner, not a CI platform. Trigger via `crontab`, webhook, or `duckflux run`. |
+| `on:` triggers | External trigger (cron, webhook, CLI) | duckflux is a runner, not a CI platform. Trigger via `crontab`, webhook, or `quack run`. |
 | `workflow_dispatch` inputs | `inputs:` with JSON Schema | duckflux validates at parse time. Supports `type`, `default`, `required`, `minimum`, `maximum`. |
 | jobs | participants | Named, reusable step definitions. |
 | steps with `run:` | `type: exec` with `run:` | Direct equivalent. |
@@ -61,7 +61,7 @@ The implication: for most pipelines, you can extract the `run:` commands and the
 | reusable workflows | `type: workflow` + `path:` | Sub-workflows share the event hub (GHA reusable workflows are isolated). |
 | artifacts | I/O chain | stdout of step N becomes stdin of step N+1. No files, no template syntax. |
 | `working-directory` | `cwd:` | Supports CEL expressions (e.g. `workflow.inputs.packagePath`). |
-| concurrency groups | No equivalent | Multiple `duckflux run` invocations run independently. |
+| concurrency groups | No equivalent | Multiple `quack run` invocations run independently. |
 | `services:` | Not in scope | Use Docker Compose in a setup step. |
 
 ---
@@ -144,7 +144,7 @@ The implication: for most pipelines, you can extract the `run:` commands and the
 
 Key differences:
 
-- **No checkout/setup actions.** You run duckflux where the code already exists (your machine, a pre-configured container, a self-hosted runner). Checkout and setup happen before `duckflux run`.
+- **No checkout/setup actions.** You run duckflux where the code already exists (your machine, a pre-configured container, a self-hosted runner). Checkout and setup happen before `quack run`.
 - **Lint and test run in parallel.** In GHA, steps within a job are sequential. To parallelize, you need separate jobs with `needs:`. In duckflux, `parallel:` is a flow construct.
 - **`when` replaces `if:`.** The deploy step only runs when the ref is `main`. Same logic, declarative guard.
 - **No `runs-on:`.** duckflux runs wherever you invoke it.
@@ -354,7 +354,7 @@ The sub-workflow emits `db.ready` mid-execution. The parent reacts immediately. 
 
 **Caching.** `actions/cache` stores dependency caches across runs. duckflux has no cache primitive. You manage caching at the OS or container layer.
 
-**Concurrency groups.** GHA prevents concurrent runs of the same workflow with `concurrency:`. duckflux has no equivalent. Multiple `duckflux run` invocations run independently.
+**Concurrency groups.** GHA prevents concurrent runs of the same workflow with `concurrency:`. duckflux has no equivalent. Multiple `quack run` invocations run independently.
 
 **Container services.** GHA's `services:` spins up sidecar containers (PostgreSQL, Redis) alongside your job. duckflux does not manage containers. Use `docker compose up` in a setup step.
 
@@ -385,7 +385,7 @@ jobs:
         run: npm install -g @duckflux/runner
 
       - name: Run pipeline
-        run: duckflux run ci-pipeline.duck.yaml
+        run: quack run ci-pipeline.duck.yaml
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
           NODE_ENV: production
@@ -397,13 +397,13 @@ The `.duck.yaml` file is portable. You can run the exact same file locally:
 
 ```bash
 export DEPLOY_TOKEN=my-local-token
-duckflux run ci-pipeline.duck.yaml
+quack run ci-pipeline.duck.yaml
 ```
 
 No need for `act` or other GHA emulators. The workflow runs the same everywhere because it's just shell commands orchestrated by a spec.
 
 <Aside type="tip">
-This hybrid approach lets you migrate incrementally. Move one job at a time from GHA YAML to a `.duck.yaml` file. Keep the GHA workflow as a thin wrapper that triggers `duckflux run`.
+This hybrid approach lets you migrate incrementally. Move one job at a time from GHA YAML to a `.duck.yaml` file. Keep the GHA workflow as a thin wrapper that triggers `quack run`.
 </Aside>
 
 ---
@@ -427,13 +427,13 @@ bun add -g @duckflux/runner
 6. **Run locally:**
 
 ```bash
-duckflux run my-pipeline.duck.yaml
+quack run my-pipeline.duck.yaml
 ```
 
 7. **Observe** via the [web server UI](/tooling/web-server-ui/):
 
 ```bash
-duckflux server --trace-dir ./traces
+quack server --trace-dir ./traces
 ```
 
 <Aside type="tip">

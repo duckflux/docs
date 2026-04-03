@@ -5,10 +5,10 @@ description: How to use the DuckFlux CLI to run workflows.
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The `@duckflux/runner` package ships a `duckflux` binary that lets you run, lint, and validate workflows from the command line.
+The `@duckflux/runner` package ships a `quack` binary that lets you run, lint, and validate workflows from the command line.
 
 ```bash
-duckflux <command> <workflow.yaml> [flags]
+quack <command> <workflow.yaml> [flags]
 ```
 
 ---
@@ -32,7 +32,7 @@ duckflux <command> <workflow.yaml> [flags]
     Install via [Homebrew](https://brew.sh):
 
     ```bash
-    brew install duckflux/tap/duckflux-js
+    brew install duckflux/tap/quack
     ```
   </TabItem>
 
@@ -40,11 +40,12 @@ duckflux <command> <workflow.yaml> [flags]
     Install via apt:
 
     ```bash
+    curl -fsSL https://duckflux.github.io/apt-repo/install.sh | bash
     ```
   </TabItem>
 
   <TabItem label="Generic (npm/Bun)">
-    Install globally so `duckflux` is available everywhere on your machine.
+    Install globally so `quack` is available everywhere on your machine.
 
     ```bash
     # npm
@@ -57,7 +58,7 @@ duckflux <command> <workflow.yaml> [flags]
     Verify:
 
     ```bash
-    duckflux version
+    quack version
     ```
   </TabItem>
 
@@ -66,20 +67,20 @@ duckflux <command> <workflow.yaml> [flags]
 
     | Platform | File |
     |---|---|
-    | macOS ARM64 (Apple Silicon) | `duckflux-darwin-arm64` |
-    | macOS x64 (Intel) | `duckflux-darwin-x64` |
-    | Linux x64 | `duckflux-linux-x64` |
-    | Linux ARM64 | `duckflux-linux-arm64` |
-    | Windows x64 | `duckflux-windows-x64.exe` |
+    | macOS ARM64 (Apple Silicon) | `quack-darwin-arm64` |
+    | macOS x64 (Intel) | `quack-darwin-x64` |
+    | Linux x64 | `quack-linux-x64` |
+    | Linux ARM64 | `quack-linux-arm64` |
+    | Windows x64 | `quack-windows-x64.exe` |
 
     **macOS / Linux:**
 
     ```bash
     # Example for macOS ARM64 — replace the filename for your platform
-    curl -fsSL https://github.com/duckflux/runtime-js/releases/latest/download/duckflux-darwin-arm64 \
-      -o /usr/local/bin/duckflux
-    chmod +x /usr/local/bin/duckflux
-    duckflux version
+    curl -fsSL https://github.com/duckflux/runtime-js/releases/latest/download/quack-darwin-arm64 \
+      -o /usr/local/bin/quack
+    chmod +x /usr/local/bin/quack
+    quack version
     ```
 
     **Windows:** download the `.exe`, place it somewhere on your `%PATH%`, and run it directly.
@@ -105,13 +106,13 @@ duckflux <command> <workflow.yaml> [flags]
 Executes a workflow from a YAML file and prints the result to `stdout`.
 
 ```bash
-duckflux run <workflow.yaml> [flags]
+quack run <workflow.yaml> [flags]
 ```
 
 `run` is the default command — if the first positional argument is a `.yaml` file and no subcommand is given, it is implied:
 
 ```bash
-duckflux workflow.yaml   # same as: duckflux run workflow.yaml
+quack workflow.yaml   # same as: quack run workflow.yaml
 ```
 
 ### Flags
@@ -120,7 +121,7 @@ duckflux workflow.yaml   # same as: duckflux run workflow.yaml
 |------|-------|------|---------|-------------|
 | `--input` | `-i` | string | — | Input as `key=value`. Repeatable. Values are JSON-parsed, falling back to strings. |
 | `--input-file` | — | string | — | Path to a JSON file containing workflow inputs. |
-| `--cwd` | — | string | — | Working directory used for `exec` participants. |
+| `--cwd` | — | string | — | Working directory for `exec` participants. See [Working directory](/runtime/working-directory/). |
 | `--event-backend` | — | string | `memory` | Event hub backend: `memory`, `nats`, or `redis`. |
 | `--nats-url` | — | string | — | NATS server URL. Required when `--event-backend=nats`. |
 | `--nats-stream` | — | string | `duckflux-events` | JetStream stream name. |
@@ -170,35 +171,35 @@ Values are JSON-parsed first, falling back to plain strings:
 
 ```bash
 # Basic execution
-duckflux run workflow.yaml
+quack run workflow.yaml
 
 # Pass inputs
-duckflux run workflow.yaml --input name=World --input count=3
+quack run workflow.yaml --input name=World --input count=3
 
 # Inputs from file
-duckflux run workflow.yaml --input-file inputs.json
+quack run workflow.yaml --input-file inputs.json
 
 # Piped inputs
-cat inputs.json | duckflux run workflow.yaml
+cat inputs.json | quack run workflow.yaml
 
 # Custom working directory with verbose errors
-duckflux run workflow.yaml --cwd /workspace --verbose
+quack run workflow.yaml --cwd /workspace --verbose
 
 # NATS event backend
-duckflux run workflow.yaml \
+quack run workflow.yaml \
   --event-backend=nats \
   --nats-url=nats://localhost:4222
 
 # Redis event backend
-duckflux run workflow.yaml \
+quack run workflow.yaml \
   --event-backend=redis \
   --redis-addr=localhost:6379
 
 # Write a JSON trace for each run
-duckflux run workflow.yaml --trace-dir ./traces
+quack run workflow.yaml --trace-dir ./traces
 
 # Write a SQLite trace (all runs in separate DB files)
-duckflux run workflow.yaml --trace-dir ./traces --trace-format sqlite
+quack run workflow.yaml --trace-dir ./traces --trace-format sqlite
 ```
 
 ### Tracing
@@ -212,7 +213,7 @@ Use `--trace-dir` to capture a structured execution record for each run. See [Ex
 Validates a workflow file without executing it. Checks schema correctness, semantic consistency, and common authoring issues.
 
 ```bash
-duckflux lint <workflow.yaml>
+quack lint <workflow.yaml>
 ```
 
 ### Checks performed
@@ -236,13 +237,13 @@ If all checks pass, `valid` is printed to `stdout`. Errors and warnings go to `s
 ### Example
 
 ```bash
-duckflux lint workflow.yaml
+quack lint workflow.yaml
 
 # CI-friendly: capture all output
-duckflux lint workflow.yaml 2>&1
+quack lint workflow.yaml 2>&1
 
 # Check exit code
-if duckflux lint workflow.yaml; then
+if quack lint workflow.yaml; then
   echo "Ready to run"
 fi
 ```
@@ -254,7 +255,7 @@ fi
 Performs the same checks as [`lint`](#lint), and additionally validates provided inputs against the workflow's declared `inputs` schema.
 
 ```bash
-duckflux validate <workflow.yaml> [flags]
+quack validate <workflow.yaml> [flags]
 ```
 
 ### Flags
@@ -283,16 +284,16 @@ duckflux validate <workflow.yaml> [flags]
 
 ```bash
 # Validate structure only
-duckflux validate workflow.yaml
+quack validate workflow.yaml
 
 # Validate structure + inputs
-duckflux validate workflow.yaml --input name=World --input count=3
+quack validate workflow.yaml --input name=World --input count=3
 
 # Inputs from file
-duckflux validate workflow.yaml --input-file test-inputs.json
+quack validate workflow.yaml --input-file test-inputs.json
 
 # Piped inputs
-echo '{"name":"World"}' | duckflux validate workflow.yaml
+echo '{"name":"World"}' | quack validate workflow.yaml
 ```
 
 ---
@@ -302,7 +303,7 @@ echo '{"name":"World"}' | duckflux validate workflow.yaml
 Starts the duckflux web server UI — a local dev tool for executing and observing workflows visually. See [Web Server UI](/tooling/web-server-ui/) for a full feature walkthrough with screenshots.
 
 ```bash
-duckflux server [flags]
+quack server [flags]
 ```
 
 ### Flags
@@ -327,10 +328,10 @@ Answering **Y** runs `bun add @duckflux/server -D` (falling back to `npm install
 
 ```bash
 # Start with trace output directory
-duckflux server --trace-dir ./traces
+quack server --trace-dir ./traces
 
 # Custom workflow directory and port
-duckflux server --trace-dir ./traces --workflow-dir ./workflows --port 8080
+quack server --trace-dir ./traces --workflow-dir ./workflows --port 8080
 ```
 
 <Aside type="tip">
@@ -344,8 +345,8 @@ duckflux server --trace-dir ./traces --workflow-dir ./workflows --port 8080
 Prints the CLI version to `stdout`.
 
 ```bash
-duckflux version
-# 0.6.0
+quack version
+# 0.7.0
 ```
 
 Always exits with code `0`.

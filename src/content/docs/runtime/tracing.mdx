@@ -15,13 +15,13 @@ Tracing is incremental: each step is written to the file as it completes, not at
 
 ```bash
 # JSON trace (default)
-duckflux run workflow.yaml --trace-dir ./traces
+quack run workflow.yaml --trace-dir ./traces
 
 # TXT trace — human-readable sections
-duckflux run workflow.yaml --trace-dir ./traces --trace-format txt
+quack run workflow.yaml --trace-dir ./traces --trace-format txt
 
 # SQLite trace — queryable with any SQL client
-duckflux run workflow.yaml --trace-dir ./traces --trace-format sqlite
+quack run workflow.yaml --trace-dir ./traces --trace-format sqlite
 ```
 
 Output files are named `<executionId>.<ext>`:

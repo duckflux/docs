@@ -5,7 +5,7 @@ description: A local web-based dev tool for executing and observing duckflux wor
 
 import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 
-The **duckflux server** is a local web UI for running and inspecting workflows — think GitHub Actions, but for your duckflux flows. It ships as the `@duckflux/server` package and is launched via the [`duckflux server`](/runtime/cli/#server) CLI command.
+The **quack server** is a local web UI for running and inspecting workflows — think GitHub Actions, but for your duckflux flows. It ships as the `@duckflux/server` package and is launched via the [`quack server`](/runtime/cli/#server) CLI command.
 
 ![Workflow list in dark mode](../../../assets/server/workflows-dark.png)
 
@@ -15,7 +15,7 @@ The **duckflux server** is a local web UI for running and inspecting workflows �
 
 ```bash
 # 1. Make sure you have trace output enabled
-duckflux server --trace-dir ./traces --workflow-dir ./workflows
+quack server --trace-dir ./traces --workflow-dir ./workflows
 
 # 2. Open the UI
 #    → http://localhost:3000
@@ -34,7 +34,7 @@ The server scans `--workflow-dir` for `.yaml` / `.yml` files and watches `--trac
 | `--port` | string | `3000` | HTTP port for the web UI. |
 
 <Aside type="note">
-  The `--trace-dir` flag is consistent with the [`duckflux run --trace-dir`](/runtime/cli/#flags) flag. Point both commands at the same directory to see CLI-triggered executions in the server UI.
+  The `--trace-dir` flag is consistent with the [`quack run --trace-dir`](/runtime/cli/#flags) flag. Point both commands at the same directory to see CLI-triggered executions in the server UI.
 </Aside>
 
 ---
@@ -160,7 +160,7 @@ The server runs as a single Next.js process — the API routes and the UI are se
 - **Binary:** `duckflux-server`
 - **Minimum runtime:** Bun 1.x or Node.js 20+
 
-The package is auto-installed by `duckflux server` when not present in the project. You can also install it manually:
+The package is auto-installed by `quack server` when not present in the project. You can also install it manually:
 
 ```bash
 bun add @duckflux/server -D

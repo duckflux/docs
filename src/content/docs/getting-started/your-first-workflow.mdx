@@ -19,20 +19,26 @@ That's it — one step, one command. A workflow is just a YAML file with a `flow
 
 ---
 
-## 2. Install a runtime
+## 2. Install the runtime
 
-Duckflux workflows are plain YAML files — they need a **runtime** to execute.
+Duckflux workflows are plain YAML files — they need a **runtime** to execute. Install it globally:
 
-See the [JavaScript runtime installation guide](/javascript-runtime/installation/) for setup instructions.
+```bash
+npm install -g duckflux
+```
+
+<Aside>
+  For more installation options (Bun, Homebrew, standalone binaries, etc.), see the full [CLI installation guide](/runtime/cli/#installation).
+</Aside>
 
 ---
 
 ## 3. Run the workflow
 
-Once a runtime is installed, use `quack` to run your workflow:
+Once the runtime is installed, run your workflow:
 
 ```sh
-quack hello.duck.yaml
+quack run hello.duck.yaml
 ```
 
 The runtime reads the file, executes the flow, and prints the output:

@@ -25,14 +25,14 @@ That's a complete, runnable workflow. No metadata, no configuration, no schema. 
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `version` | no | string | Spec version. Default: `"0.3"`. |
-| `id` | no | string | Unique identifier for the workflow definition. |
-| `name` | no | string | Human-readable name. |
-| `defaults` | no | object | Global defaults applied to all participants. |
-| `inputs` | no | object | Parameters the workflow accepts from its caller. |
-| `participants` | no | object | Named, reusable step definitions. |
-| `flow` | **yes** | array | The execution sequence. |
-| `output` | no | string or object | Final result mapping. Defaults to the last step's output. |
+| [`version`](#version) | no | string | Spec version. Default: `"0.3"`. |
+| [`id`](#id-and-name) | no | string | Unique identifier for the workflow definition. |
+| [`name`](#id-and-name) | no | string | Human-readable name. |
+| [`defaults`](#defaults) | no | object | Global defaults applied to all participants. |
+| [`inputs`](#inputs) | no | object | Parameters the workflow accepts from its caller. |
+| [`participants`](#participants) | no | object | Named, reusable step definitions. |
+| [`flow`](#flow) | **yes** | array | The execution sequence. |
+| [`output`](#output) | no | string or object | Final result mapping. Defaults to the last step's output. |
 
 ---
 
@@ -76,15 +76,21 @@ defaults:
 | `timeout` | duration | Default maximum execution time per step. |
 | `cwd` | string | Default working directory for `exec` participants. |
 
-**Timeout precedence:**
-```
-flow-level > participant-level > defaults > runtime default (no timeout)
-```
+**Timeout precedence** (highest to lowest):
 
-**Working directory precedence:**
-```
-participant.cwd > defaults.cwd > CLI --cwd > process cwd
-```
+1. Flow-level override
+2. Participant-level
+3. `defaults.timeout`
+4. Runtime default (no timeout)
+
+**Working directory precedence** (highest to lowest):
+
+1. `participant.cwd`
+2. `defaults.cwd`
+3. CLI `--cwd` flag
+4. Process working directory
+
+See [Working directory](/runtime/working-directory/) for details.
 
 <Aside type="tip">
   Set `defaults.timeout` to a conservative value for all workflows that talk to external services or run long commands. It prevents a stuck step from blocking the entire execution indefinitely.

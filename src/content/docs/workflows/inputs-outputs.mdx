@@ -87,7 +87,7 @@ inputs:
 | `type` | JSON Schema type: `string`, `integer`, `number`, `boolean`, `array`, `object` |
 | `default` | Value used when the caller does not provide the field |
 | `required` | If `true`, the runner rejects the workflow when the field is missing |
-| `description` | Human-readable description (used in `duckflux validate` output) |
+| `description` | Human-readable description (used in `quack validate` output) |
 | `format` | String format hint: `uri`, `date`, `email`, etc. |
 | `minimum` / `maximum` | Numeric bounds |
 | `items` | Schema for array items |
@@ -98,13 +98,13 @@ Inputs can be provided via the CLI in three equivalent ways (highest priority wi
 
 ```bash
 # Inline flags
-duckflux run deploy.duck.yaml --input branch=main --input env=staging
+quack run deploy.duck.yaml --input branch=main --input env=staging
 
 # JSON file
-duckflux run deploy.duck.yaml --input-file inputs.json
+quack run deploy.duck.yaml --input-file inputs.json
 
 # Piped JSON via stdin
-echo '{"branch": "main", "env": "staging"}' | duckflux run deploy.duck.yaml
+echo '{"branch": "main", "env": "staging"}' | quack run deploy.duck.yaml
 ```
 
 Resolution priority: `--input` flags > `--input-file` > stdin.

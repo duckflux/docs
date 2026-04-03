@@ -7,24 +7,24 @@ import { Aside, LinkCard } from '@astrojs/starlight/components';
 
 Duckflux workflows are plain YAML files — they don't run on their own. You need a **runtime** to execute them.
 
-The official runtime is the **JavaScript runtime**, written in TypeScript and targeting Node.js and Bun.
+The official runtime is written in TypeScript and targets Node.js and Bun.
 
-<LinkCard title="JavaScript Runtime" href="/javascript-runtime/installation/" description="TypeScript runtime for Node.js and Bun." />
+<LinkCard title="Runtime" href="/runtime/cli/" description="Install and use the duckflux CLI." />
 
 ---
 
 ## Install the runtime
 
-See the [JavaScript runtime installation guide](/javascript-runtime/installation/) for setup instructions.
+See the [CLI installation guide](/runtime/cli/#installation) for setup instructions.
 
 ---
 
 ## Run a workflow
 
-Once a runtime is installed, use `quack` to run any `.duck.yaml` file:
+Once the runtime is installed, use `quack run` to run any `.duck.yaml` file:
 
 ```sh
-quack hello.duck.yaml
+quack run hello.duck.yaml
 ```
 
 That's the full command. The runtime reads the file, executes the flow, and prints the output.
@@ -34,11 +34,11 @@ That's the full command. The runtime reads the file, executes the flow, and prin
 Use `--cwd` to set the base working directory for `exec` participants:
 
 ```sh
-quack deploy.duck.yaml --cwd ./repo
+quack run deploy.duck.yaml --cwd ./repo
 ```
 
 This is equivalent to setting `defaults.cwd` in the workflow file itself, but applied from the command line. Useful when the workflow is shared but the working directory varies per environment.
 
 <Aside type="tip">
-  The `--cwd` flag sets the base directory. Individual participants can still override it with their own `cwd` field. See [Workflow files](/workflows/) for the full precedence rules.
+  The `--cwd` flag sets the base directory. Individual participants can still override it with their own `cwd` field. See [Working directory](/runtime/working-directory/) for the full precedence rules.
 </Aside>

@@ -5,6 +5,7 @@ import starlightDocSearch from '@astrojs/starlight-docsearch';
 
 // https://astro.build/config
 export default defineConfig({
+	site: 'https://duckflux.openvibes.tech',
 	integrations: [
 		starlight({
 			expressiveCode: {
@@ -51,7 +52,7 @@ export default defineConfig({
 					label: 'Workflows',
 					items: [
 						{ label: 'Workflow files', slug: 'workflows' },
-						{ label: 'Participants', slug: 'workflows/participants' },
+						{ label: 'Using participants', slug: 'workflows/participants' },
 						{ label: 'Participant types', slug: 'workflows/participant-types' },
 						{ label: 'Inputs & outputs', slug: 'workflows/inputs-outputs' },
 						{ label: 'Variables & expressions', slug: 'workflows/variables-and-expressions' },
@@ -70,6 +71,7 @@ export default defineConfig({
 					items: [
 						{ label: "Runtime overview", slug: 'runtime/overview' },
 						{ label: 'CLI usage', slug: 'runtime/cli' },
+						{ label: 'Working directory', slug: 'runtime/working-directory' },
 						{ label: 'Execution tracing', slug: 'runtime/tracing' },
 						{ label: 'Event hub providers', slug: 'runtime/event-hub-providers' },
 						{ label: 'Library usage', slug: 'runtime/library' }

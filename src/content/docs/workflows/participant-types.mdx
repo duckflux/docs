@@ -72,11 +72,7 @@ Runs a shell command in the host environment. Use this for builds, tests, lintin
   </TabItem>
 </Tabs>
 
-The `cwd` field accepts either a literal path or a CEL expression. Precedence for working directory resolution:
-
-```
-participant.cwd > defaults.cwd > CLI --cwd > process cwd
-```
+The `cwd` field accepts either a literal path or a CEL expression. See [Working directory](/runtime/working-directory/) for the full precedence rules.
 
 <Aside type="tip">
   The output of an `exec` participant is the stdout of the command. If stdout is valid JSON, the runtime will parse it automatically — making fields accessible as `<step>.output.<field>` in downstream CEL expressions.
