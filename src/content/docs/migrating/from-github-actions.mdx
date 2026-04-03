@@ -1,0 +1,449 @@
+---
+title: Migrating from GitHub Actions
+description: How to replace GitHub Actions CI/CD workflows with declarative duckflux workflows, and why you'd want to.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+This might sound unexpected: duckflux can replace your CI/CD pipeline.
+
+Not the platform (triggers, managed runners, secret vaults). The **workflow execution layer**. The part that actually sequences your build, test, lint, and deploy steps.
+
+The reason is simpler than it seems: GitHub Actions steps are shell commands. The `run:` field executes a shell script. The `uses:` field invokes an action, which is a packaged shell script, Node.js program, or Docker container. If you can run the underlying command on a machine, you can run it via a duckflux `exec` participant.
+
+The difference is what you get on top. duckflux adds conditional loops, retry with exponential backoff, events across parallel branches, automatic I/O chaining, and sub-workflows with shared event hubs. GitHub Actions has none of these natively.
+
+You lose the platform: triggers, the actions marketplace, managed compute, integrated secrets, PR status checks. But you gain portability, expressiveness, and a workflow spec that runs the same on your laptop, in a container, or inside a GHA job.
+
+---
+
+## What GitHub Actions steps really are
+
+GitHub Actions has three types of steps:
+
+1. **`run:`** executes a shell command directly.
+2. **`uses:`** invokes an action (a JavaScript program, a Docker container, or a composite of other steps).
+3. **Composite actions** are reusable groups of `run:` and `uses:` steps.
+
+All three ultimately resolve to shell commands or processes running on the host. The `uses:` layer is a packaging and distribution mechanism, not a runtime primitive.
+
+Common actions and what they actually do:
+
+| Action | What it wraps |
+|---|---|
+| `actions/checkout@v4` | `git checkout` with token injection |
+| `actions/setup-node@v4` | Downloads Node.js, updates `$PATH` |
+| `actions/cache@v4` | `tar`, hash computation, HTTP upload/download to GitHub's cache API |
+| `actions/upload-artifact@v4` | HTTP upload to GitHub's artifact storage |
+
+The first two are trivially replaceable by shell commands. The last two depend on GitHub's infrastructure.
+
+The implication: for most pipelines, you can extract the `run:` commands and the commands behind `uses:` actions, and express them as duckflux `exec` participants. The exceptions are actions that deeply integrate with GitHub's API (status checks, artifact storage, CodeQL, OIDC).
+
+---
+
+## Concepts side by side
+
+| GitHub Actions | duckflux | Notes |
+|---|---|---|
+| `.github/workflows/*.yml` | `.flux.yaml` file | Both are declarative YAML. |
+| `on:` triggers | External trigger (cron, webhook, CLI) | duckflux is a runner, not a CI platform. Trigger via `crontab`, webhook, or `duckflux run`. |
+| `workflow_dispatch` inputs | `inputs:` with JSON Schema | duckflux validates at parse time. Supports `type`, `default`, `required`, `minimum`, `maximum`. |
+| jobs | participants | Named, reusable step definitions. |
+| steps with `run:` | `type: exec` with `run:` | Direct equivalent. |
+| steps with `uses:` | `type: exec` running the underlying command | Replace the action with the shell command it wraps. |
+| `env:` / secrets | `env.*` in CEL, OS env vars | duckflux inherits the process environment. `env.DEPLOY_TOKEN` in any CEL expression. |
+| `needs:` (job deps) | Sequential flow or `when` guards | Steps execute top-to-bottom by default. |
+| `strategy.matrix` | `parallel:` with explicit branches | No dynamic matrix. Explicit branches for each variant. |
+| `if:` conditions | `when:` guard or `if:` construct | `when` for single steps, `if`/`then`/`else` for branches. |
+| `continue-on-error` | `onError: skip` | Per-step error handling. Also `onError: retry` and `onError: <fallback>`. |
+| `timeout-minutes` | `timeout:` (e.g. `5m`, `30s`) | Per-step or global via `defaults`. |
+| reusable workflows | `type: workflow` + `path:` | Sub-workflows share the event hub (GHA reusable workflows are isolated). |
+| artifacts | I/O chain | stdout of step N becomes stdin of step N+1. No files, no template syntax. |
+| `working-directory` | `cwd:` | Supports CEL expressions (e.g. `workflow.inputs.packagePath`). |
+| concurrency groups | No equivalent | Multiple `duckflux run` invocations run independently. |
+| `services:` | Not in scope | Use Docker Compose in a setup step. |
+
+---
+
+## Side-by-side: a real CI/CD pipeline
+
+### Simple build-test-deploy
+
+<Tabs>
+  <TabItem label="GitHub Actions">
+    ```yaml title=".github/workflows/ci.yml"
+    name: CI
+    on:
+      push:
+        branches: [main]
+      pull_request:
+
+    jobs:
+      ci:
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v4
+
+          - uses: actions/setup-node@v4
+            with:
+              node-version: '20'
+
+          - run: npm ci
+
+          - run: npm run lint
+
+          - run: npm test
+
+          - run: npm run build
+
+          - name: Deploy
+            run: ./deploy.sh
+            if: github.ref == 'refs/heads/main'
+    ```
+  </TabItem>
+  <TabItem label="duckflux">
+    ```yaml title="ci-pipeline.flux.yaml"
+    inputs:
+      ref:
+        type: string
+        default: "main"
+
+    participants:
+      install:
+        type: exec
+        run: npm ci
+
+      lint:
+        type: exec
+        run: npm run lint
+
+      test:
+        type: exec
+        run: npm test
+
+      build:
+        type: exec
+        run: npm run build
+
+      deploy:
+        type: exec
+        run: ./deploy.sh
+
+    flow:
+      - install
+      - parallel:
+          - lint
+          - test
+      - build
+      - deploy:
+          when: workflow.inputs.ref == "main"
+    ```
+  </TabItem>
+</Tabs>
+
+Key differences:
+
+- **No checkout/setup actions.** You run duckflux where the code already exists (your machine, a pre-configured container, a self-hosted runner). Checkout and setup happen before `duckflux run`.
+- **Lint and test run in parallel.** In GHA, steps within a job are sequential. To parallelize, you need separate jobs with `needs:`. In duckflux, `parallel:` is a flow construct.
+- **`when` replaces `if:`.** The deploy step only runs when the ref is `main`. Same logic, declarative guard.
+- **No `runs-on:`.** duckflux runs wherever you invoke it.
+
+### Matrix strategy
+
+<Tabs>
+  <TabItem label="GitHub Actions">
+    ```yaml title=".github/workflows/matrix.yml"
+    jobs:
+      test:
+        runs-on: ubuntu-latest
+        strategy:
+          matrix:
+            node-version: [18, 20, 22]
+        steps:
+          - uses: actions/checkout@v4
+          - uses: actions/setup-node@v4
+            with:
+              node-version: ${{ matrix.node-version }}
+          - run: npm ci
+          - run: npm test
+    ```
+  </TabItem>
+  <TabItem label="duckflux">
+    ```yaml title="matrix-test.flux.yaml"
+    flow:
+      - parallel:
+          - as: test-node-18
+            type: exec
+            run: nvm use 18 && npm ci && npm test
+
+          - as: test-node-20
+            type: exec
+            run: nvm use 20 && npm ci && npm test
+
+          - as: test-node-22
+            type: exec
+            run: nvm use 22 && npm ci && npm test
+    ```
+  </TabItem>
+</Tabs>
+
+This is more verbose than GHA's matrix. For three variants it's fine. For a 5x3 matrix (5 OS targets x 3 Node versions), GHA's matrix is the better tool. duckflux has no dynamic matrix primitive.
+
+<Aside type="note">
+duckflux is not trying to replace every GHA feature. Matrix strategies with large dimensions are a genuine GHA strength. Use each tool where it fits.
+</Aside>
+
+---
+
+## Where duckflux goes beyond
+
+### Conditional loops
+
+GHA has no loop construct. If you need to retry a flaky integration test suite until it passes, you unroll iterations manually, use a recursive reusable workflow, or install a third-party action.
+
+**duckflux:**
+```yaml
+flow:
+  - loop:
+      until: tests.status == "success"
+      max: 5
+      steps:
+        - as: tests
+          type: exec
+          run: npm run test:integration
+          onError: skip
+```
+
+Five lines. Run the tests, retry up to 5 times, stop when they pass.
+
+### Retry with exponential backoff
+
+GHA's `continue-on-error` lets a step fail without stopping the workflow, but there is no retry mechanism. You need third-party actions like `nick-fields/retry` or shell loops.
+
+**duckflux:**
+```yaml
+participants:
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    onError: retry
+    retry:
+      max: 3
+      backoff: 5s
+      factor: 2
+```
+
+Three retries with 5s, 10s, 20s intervals. Built into the spec.
+
+### Events (emit/wait)
+
+GHA steps cannot signal each other asynchronously. Sharing data between steps requires writing to `$GITHUB_OUTPUT` files and reading via `${{ steps.id.outputs.key }}` template syntax. There is no push-based event system.
+
+**duckflux:**
+```yaml
+flow:
+  - parallel:
+      - as: build
+        type: exec
+        run: npm run build
+
+      - as: notify-start
+        type: emit
+        event: "build.started"
+        payload:
+          branch: workflow.inputs.branch
+
+  - wait:
+      event: "deploy.approved"
+      timeout: 30m
+      onTimeout: fail
+
+  - as: deploy
+    type: exec
+    run: ./deploy.sh
+```
+
+Events propagate within the workflow, across parallel branches, and across parent/child sub-workflows. The `wait` step pauses execution until the event arrives or the timeout expires.
+
+### I/O chain
+
+GHA's data passing between steps is verbose:
+
+```yaml
+# GHA: step A writes output
+- id: version
+  run: echo "tag=$(git describe --tags)" >> $GITHUB_OUTPUT
+
+# GHA: step B reads it
+- run: echo "Deploying ${{ steps.version.outputs.tag }}"
+```
+
+**duckflux:**
+```yaml
+flow:
+  - type: exec
+    run: git describe --tags
+
+  - as: deploy
+    type: exec
+    run: ./deploy.sh
+```
+
+stdout of step 1 chains as stdin to step 2. No output declarations, no template syntax, no file writing. Unix pipes as a workflow primitive.
+
+### Sub-workflows with shared events
+
+GHA reusable workflows are fully isolated. A called workflow cannot emit events back to the caller mid-execution. You pass inputs and get outputs when it's done.
+
+**duckflux:**
+```yaml
+# parent.flux.yaml
+flow:
+  - as: setup
+    type: workflow
+    path: ./setup-db.flux.yaml
+
+  - wait:
+      event: "db.ready"
+      timeout: 2m
+
+  - as: tests
+    type: exec
+    run: npm run test:integration
+```
+
+```yaml
+# setup-db.flux.yaml
+participants:
+  start-db:
+    type: exec
+    run: docker compose up -d postgres
+
+  signal:
+    type: emit
+    event: "db.ready"
+    payload:
+      host: "'localhost'"
+      port: "'5432'"
+
+flow:
+  - start-db
+  - wait:
+      until: "true"
+      poll: 1s
+      timeout: 30s
+  - signal
+```
+
+The sub-workflow emits `db.ready` mid-execution. The parent reacts immediately. GHA reusable workflows cannot do this.
+
+---
+
+## What you lose
+
+**Trigger system.** duckflux does not have `on: push` or `on: pull_request`. It is a workflow runner, not a CI platform. You need an external mechanism (cron, a webhook server, or a GHA wrapper) to trigger runs.
+
+**Actions marketplace.** GitHub has 20,000+ reusable actions. Most wrap shell commands (extractable), but some provide deep GitHub API integration that is hard to replicate: `actions/cache`, `actions/upload-artifact`, `github/codeql-action`.
+
+**Managed runners.** GitHub hosts the compute. duckflux runs wherever you invoke it. You bring your own machine.
+
+**Secret management.** GitHub Secrets with environment scoping, org-level secrets, OIDC for cloud providers. duckflux inherits OS environment variables. You bring your own secret management (Vault, 1Password CLI, `doppler`, or just `export`).
+
+**Status checks.** GHA integrates with GitHub PRs natively: commit status, required checks, check run annotations. duckflux has no Git hosting integration. You can call `gh api` from an `exec` step, but it's manual.
+
+**Caching.** `actions/cache` stores dependency caches across runs. duckflux has no cache primitive. You manage caching at the OS or container layer.
+
+**Concurrency groups.** GHA prevents concurrent runs of the same workflow with `concurrency:`. duckflux has no equivalent. Multiple `duckflux run` invocations run independently.
+
+**Container services.** GHA's `services:` spins up sidecar containers (PostgreSQL, Redis) alongside your job. duckflux does not manage containers. Use `docker compose up` in a setup step.
+
+<Aside type="note">
+Most of these gaps are about **platform integration**, not workflow execution. duckflux replaces the runner, not the platform. For triggers and secrets, the hybrid approach (next section) fills the gaps.
+</Aside>
+
+---
+
+## Hybrid: duckflux inside GitHub Actions
+
+You don't have to choose. Use GHA for what it's good at (triggers, compute, secrets) and duckflux for the workflow logic:
+
+```yaml title=".github/workflows/ci.yml"
+name: CI via duckflux
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install duckflux
+        run: npm install -g @duckflux/runner
+
+      - name: Run pipeline
+        run: duckflux run ci-pipeline.flux.yaml
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+          NODE_ENV: production
+```
+
+GHA handles the trigger (`on: push`), the compute (`runs-on: ubuntu-latest`), and the secrets (`${{ secrets.DEPLOY_TOKEN }}`). duckflux handles the workflow logic (sequencing, parallelism, loops, retries, events).
+
+The `.flux.yaml` file is portable. You can run the exact same file locally:
+
+```bash
+export DEPLOY_TOKEN=my-local-token
+duckflux run ci-pipeline.flux.yaml
+```
+
+No need for `act` or other GHA emulators. The workflow runs the same everywhere because it's just shell commands orchestrated by a spec.
+
+<Aside type="tip">
+This hybrid approach lets you migrate incrementally. Move one job at a time from GHA YAML to a `.flux.yaml` file. Keep the GHA workflow as a thin wrapper that triggers `duckflux run`.
+</Aside>
+
+---
+
+## Getting started
+
+1. **Install the runtime:**
+
+```bash
+bun add -g @duckflux/runner
+```
+
+2. **Pick one GitHub Actions workflow** to migrate. Start with the simplest one (build + test).
+
+3. **Extract the `run:` commands** from each GHA step into duckflux participants.
+
+4. **Replace `uses:` actions** with the underlying shell commands they wrap.
+
+5. **Write the `.flux.yaml` flow.** Use `parallel:` for independent steps, `when` for conditionals, `loop` for retries.
+
+6. **Run locally:**
+
+```bash
+duckflux run my-pipeline.flux.yaml
+```
+
+7. **Observe** via the [web server UI](/tooling/web-server-ui/):
+
+```bash
+duckflux server --trace-dir ./traces
+```
+
+<Aside type="tip">
+You don't have to replace GitHub Actions entirely. Start with the hybrid approach: keep GHA for triggers and secrets, move the workflow logic to duckflux. Migrate fully only when the portability and advanced primitives (loops, retry, events) justify it.
+</Aside>
+
+---
+
+## Final thoughts
+
+CI/CD pipelines are workflows. GitHub Actions steps are shell commands. Once you see it that way, the question shifts from "can duckflux do CI/CD?" to "why would I limit myself to a vendor-locked runner that can't loop, can't retry, and can't pass data between steps without file hacks?"
+
+duckflux gives you a portable, spec-conformant YAML that runs the same on your laptop and in a container. For teams already using duckflux for agent orchestration, running CI/CD through the same DSL means one workflow language for everything.
