@@ -86,6 +86,7 @@ export default defineConfig({
 					items: [
 						{ label: 'From Ralph Loops', slug: 'migrating/from-ralph' },
 						{ label: 'From Ralph Orchestrator', slug: 'migrating/from-ralph-orchestrator' },
+						{ label: 'From Claude Sub-agents', slug: 'migrating/from-claude-subagents' },
 					],
 				},
 				{
