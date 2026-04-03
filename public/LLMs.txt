@@ -22,14 +22,6 @@
 - [workflows/nested-workflows](https://docs.duckflux.openvibes.tech/workflows/nested-workflows/): Compose and reuse workflows by calling other workflow files as steps.
 - [workflows/runtimes](https://docs.duckflux.openvibes.tech/workflows/runtimes/): Install a duckflux runtime and run your first workflow from the command line.
 
-## Runner CLI (Go)
-
-- [runner-cli/introduction](https://docs.duckflux.openvibes.tech/runner-cli/introduction/)
-- [runner-cli/installation](https://docs.duckflux.openvibes.tech/runner-cli/installation/)
-- [runner-cli/running-workflows](https://docs.duckflux.openvibes.tech/runner-cli/running-workflows/)
-- [runner-cli/linting-validation](https://docs.duckflux.openvibes.tech/runner-cli/linting-validation/)
-- [runner-cli/event-hubs-channels](https://docs.duckflux.openvibes.tech/runner-cli/event-hubs-channels/)
-
 ## JavaScript runtime
 
 - [runtime/cli](https://docs.duckflux.openvibes.tech/runtime/cli/): How to use the DuckFlux CLI to run workflows.

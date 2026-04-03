@@ -46,7 +46,7 @@ The implication: for most pipelines, you can extract the `run:` commands and the
 
 | GitHub Actions | duckflux | Notes |
 |---|---|---|
-| `.github/workflows/*.yml` | `.flux.yaml` file | Both are declarative YAML. |
+| `.github/workflows/*.yml` | `.duck.yaml` file | Both are declarative YAML. |
 | `on:` triggers | External trigger (cron, webhook, CLI) | duckflux is a runner, not a CI platform. Trigger via `crontab`, webhook, or `duckflux run`. |
 | `workflow_dispatch` inputs | `inputs:` with JSON Schema | duckflux validates at parse time. Supports `type`, `default`, `required`, `minimum`, `maximum`. |
 | jobs | participants | Named, reusable step definitions. |
@@ -103,7 +103,7 @@ The implication: for most pipelines, you can extract the `run:` commands and the
     ```
   </TabItem>
   <TabItem label="duckflux">
-    ```yaml title="ci-pipeline.flux.yaml"
+    ```yaml title="ci-pipeline.duck.yaml"
     inputs:
       ref:
         type: string
@@ -170,7 +170,7 @@ Key differences:
     ```
   </TabItem>
   <TabItem label="duckflux">
-    ```yaml title="matrix-test.flux.yaml"
+    ```yaml title="matrix-test.duck.yaml"
     flow:
       - parallel:
           - as: test-node-18
@@ -298,11 +298,11 @@ GHA reusable workflows are fully isolated. A called workflow cannot emit events 
 
 **duckflux:**
 ```yaml
-# parent.flux.yaml
+# parent.duck.yaml
 flow:
   - as: setup
     type: workflow
-    path: ./setup-db.flux.yaml
+    path: ./setup-db.duck.yaml
 
   - wait:
       event: "db.ready"
@@ -314,7 +314,7 @@ flow:
 ```
 
 ```yaml
-# setup-db.flux.yaml
+# setup-db.duck.yaml
 participants:
   start-db:
     type: exec
@@ -385,7 +385,7 @@ jobs:
         run: npm install -g @duckflux/runner
 
       - name: Run pipeline
-        run: duckflux run ci-pipeline.flux.yaml
+        run: duckflux run ci-pipeline.duck.yaml
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
           NODE_ENV: production
@@ -393,17 +393,17 @@ jobs:
 
 GHA handles the trigger (`on: push`), the compute (`runs-on: ubuntu-latest`), and the secrets (`${{ secrets.DEPLOY_TOKEN }}`). duckflux handles the workflow logic (sequencing, parallelism, loops, retries, events).
 
-The `.flux.yaml` file is portable. You can run the exact same file locally:
+The `.duck.yaml` file is portable. You can run the exact same file locally:
 
 ```bash
 export DEPLOY_TOKEN=my-local-token
-duckflux run ci-pipeline.flux.yaml
+duckflux run ci-pipeline.duck.yaml
 ```
 
 No need for `act` or other GHA emulators. The workflow runs the same everywhere because it's just shell commands orchestrated by a spec.
 
 <Aside type="tip">
-This hybrid approach lets you migrate incrementally. Move one job at a time from GHA YAML to a `.flux.yaml` file. Keep the GHA workflow as a thin wrapper that triggers `duckflux run`.
+This hybrid approach lets you migrate incrementally. Move one job at a time from GHA YAML to a `.duck.yaml` file. Keep the GHA workflow as a thin wrapper that triggers `duckflux run`.
 </Aside>
 
 ---
@@ -422,12 +422,12 @@ bun add -g @duckflux/runner
 
 4. **Replace `uses:` actions** with the underlying shell commands they wrap.
 
-5. **Write the `.flux.yaml` flow.** Use `parallel:` for independent steps, `when` for conditionals, `loop` for retries.
+5. **Write the `.duck.yaml` flow.** Use `parallel:` for independent steps, `when` for conditionals, `loop` for retries.
 
 6. **Run locally:**
 
 ```bash
-duckflux run my-pipeline.flux.yaml
+duckflux run my-pipeline.duck.yaml
 ```
 
 7. **Observe** via the [web server UI](/tooling/web-server-ui/):

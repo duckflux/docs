@@ -383,12 +383,12 @@ See [Inputs & Outputs](/workflows/inputs-outputs/) for the full mapping and sche
 duckflux doesn't enforce a file naming convention, but the following pattern is widely used:
 
 ```
-<name>.flux.yaml
+<name>.duck.yaml
 ```
 
-Examples: `deploy.flux.yaml`, `review-loop.flux.yaml`, `ci.flux.yaml`.
+Examples: `deploy.duck.yaml`, `review-loop.duck.yaml`, `ci.duck.yaml`.
 
-The `.flux.yaml` double extension makes workflows easy to distinguish from regular config files and glob with a single pattern (`**/*.flux.yaml`).
+The `.duck.yaml` double extension makes workflows easy to distinguish from regular config files and glob with a single pattern (`**/*.duck.yaml`).
 
 <Aside>
   When using `type: workflow` to reference a sub-workflow, paths are resolved **relative to the parent workflow's directory** — not the working directory of the process. Keep sub-workflows in the same directory or a subdirectory of their parent.
@@ -1052,7 +1052,7 @@ participants:
   # workflow — run deployment as a sub-workflow
   deploy:
     type: workflow
-    path: ./deploy.flux.yaml
+    path: ./deploy.duck.yaml
     input:
       repo: workflow.inputs.repoUrl
 
@@ -1185,13 +1185,13 @@ Inputs can be provided via the CLI in three equivalent ways (highest priority wi
 
 ```bash
 # Inline flags
-duckflux run deploy.flux.yaml --input branch=main --input env=staging
+duckflux run deploy.duck.yaml --input branch=main --input env=staging
 
 # JSON file
-duckflux run deploy.flux.yaml --input-file inputs.json
+duckflux run deploy.duck.yaml --input-file inputs.json
 
 # Piped JSON via stdin
-echo '{"branch": "main", "env": "staging"}' | duckflux run deploy.flux.yaml
+echo '{"branch": "main", "env": "staging"}' | duckflux run deploy.duck.yaml
 ```
 
 Resolution priority: `--input` flags > `--input-file` > stdin.
@@ -1250,7 +1250,7 @@ flow:
 
 ### Flow-level override
 
-When invoking a reusable participant in the flow, you can override its `input` mapping for that specific call. Since v0.5, the flow override **merges** with the participant's declared `input` instead of replacing it:
+When invoking a reusable participant in the flow, you can override its `input` mapping for that specific call. The flow override **merges** with the participant's declared `input` instead of replacing it:
 
 ```yaml
 participants:
@@ -2832,15 +2832,15 @@ flow:
   - parallel:
       - as: lintCheck
         type: workflow
-        path: ./lint.flux.yaml
+        path: ./lint.duck.yaml
 
       - as: securityScan
         type: workflow
-        path: ./security.flux.yaml
+        path: ./security.duck.yaml
 
       - as: buildArtifact
         type: workflow
-        path: ./build.flux.yaml
+        path: ./build.duck.yaml
 
   - deploy:
       when: lintCheck.output.passed == true && securityScan.output.clean == true
@@ -3240,7 +3240,7 @@ output: publisher.output.ack
 Events are shared between parent and sub-workflows. The event hub instance is passed down to all `type: workflow` participants, so events emitted in a parent are visible to sub-workflows and vice versa.
 
 ```yaml
-# parent.flux.yaml
+# parent.duck.yaml
 participants:
   trigger:
     type: emit
@@ -3250,7 +3250,7 @@ participants:
 
   child:
     type: workflow
-    path: ./child.flux.yaml
+    path: ./child.duck.yaml
 
 flow:
   - trigger     # publishes job.started
@@ -3258,7 +3258,7 @@ flow:
 ```
 
 ```yaml
-# child.flux.yaml
+# child.duck.yaml
 flow:
   - wait:
       event: "job.started"
@@ -3690,13 +3690,13 @@ This is the primary mechanism for breaking large workflows into manageable, test
 
 ## The `workflow` participant type
 
-A participant of type `workflow` delegates execution to another `.flux.yaml` file:
+A participant of type `workflow` delegates execution to another `.duck.yaml` file:
 
 ```yaml
 participants:
   reviewCycle:
     type: workflow
-    path: ./review-loop.flux.yaml
+    path: ./review-loop.duck.yaml
     input:
       repo: workflow.inputs.repoUrl
       branch: workflow.inputs.branch
@@ -3724,7 +3724,7 @@ Define the sub-workflow in the `participants` block and reference it by name in 
 participants:
   reviewCycle:
     type: workflow
-    path: ./review-loop.flux.yaml
+    path: ./review-loop.duck.yaml
     input:
       repo: workflow.inputs.repoUrl
       branch: workflow.inputs.branch
@@ -3744,7 +3744,7 @@ flow:
   - coder
   - as: reviewCycle
     type: workflow
-    path: ./review-loop.flux.yaml
+    path: ./review-loop.duck.yaml
     input:
       repo: workflow.inputs.repoUrl
   - deploy
@@ -3766,7 +3766,7 @@ The `input` field maps data from the parent workflow to the sub-workflow's decla
 participants:
   analyze:
     type: workflow
-    path: ./analyze.flux.yaml
+    path: ./analyze.duck.yaml
     input:
       repo: workflow.inputs.repoUrl
       commit: coder.output.commitSha
@@ -3799,7 +3799,7 @@ flow:
 The output exposed to the parent is whatever the sub-workflow defines in its own `output` block. If the sub-workflow has no `output` block, the output of its last executed step is used.
 
 ```yaml
-# review-loop.flux.yaml
+# review-loop.duck.yaml
 flow:
   - loop:
       until: reviewer.output.approved == true
@@ -3850,7 +3850,7 @@ flow:
       steps:
         - as: reviewCycle
           type: workflow
-          path: ./review-cycle.flux.yaml
+          path: ./review-cycle.duck.yaml
           input:
             round: attempt.iteration
 ```
@@ -3865,13 +3865,13 @@ flow:
       then:
         - as: deploy
           type: workflow
-          path: ./deploy.flux.yaml
+          path: ./deploy.duck.yaml
           input:
             env: workflow.inputs.targetEnv
       else:
         - as: notify
           type: workflow
-          path: ./notify-failure.flux.yaml
+          path: ./notify-failure.duck.yaml
 ```
 
 ### Inside parallel
@@ -3881,13 +3881,13 @@ flow:
   - parallel:
       - as: lintCheck
         type: workflow
-        path: ./lint.flux.yaml
+        path: ./lint.duck.yaml
       - as: securityScan
         type: workflow
-        path: ./security.flux.yaml
+        path: ./security.duck.yaml
       - as: buildArtifact
         type: workflow
-        path: ./build.flux.yaml
+        path: ./build.duck.yaml
 ```
 
 All three sub-workflows run concurrently. Their outputs are available after the `parallel` block completes.
@@ -3899,7 +3899,7 @@ All three sub-workflows run concurrently. Their outputs are available after the 
 A parent pipeline that orchestrates three sub-workflows — a review cycle, a build, and a deployment — using outputs from each step to drive the next:
 
 ```yaml
-# pipeline.flux.yaml
+# pipeline.duck.yaml
 id: release-pipeline
 name: Release Pipeline
 version: "1"
@@ -3921,7 +3921,7 @@ inputs:
 participants:
   reviewCycle:
     type: workflow
-    path: ./review-cycle.flux.yaml
+    path: ./review-cycle.duck.yaml
     input:
       branch: workflow.inputs.branch
       maxRounds: workflow.inputs.max_review_rounds
@@ -3930,7 +3930,7 @@ participants:
 
   buildArtifact:
     type: workflow
-    path: ./build.flux.yaml
+    path: ./build.duck.yaml
     input:
       branch: workflow.inputs.branch
       commitSha: reviewCycle.output.commitSha
@@ -3938,7 +3938,7 @@ participants:
 
   deployRelease:
     type: workflow
-    path: ./deploy.flux.yaml
+    path: ./deploy.duck.yaml
     input:
       artifact: buildArtifact.output.artifactUrl
       environment: workflow.inputs.environment
@@ -3988,41 +3988,24 @@ Each sub-workflow encapsulates its own logic, inputs, and outputs. The parent pi
 
 Duckflux workflows are plain YAML files — they don't run on their own. You need a **runtime** to execute them.
 
-Two official runtimes are available:
+The official runtime is the **JavaScript runtime**, written in TypeScript and targeting Node.js and Bun.
 
-| Runtime | Language | Best for |
-|---------|----------|----------|
-| **Go runner** | Go | Production use, CLI tooling, CI/CD pipelines |
-| **JavaScript runtime** | Node.js | Scripting, custom participants, JS ecosystems |
-
-Both runtimes share the same `quack` command and behave identically for standard workflows.
-
-<CardGrid>
-  <LinkCard title="Runner CLI (Go)" href="/runner-cli/installation/" description="Production-ready CLI runner written in Go." />
-  <LinkCard title="JavaScript Runtime" href="/javascript-runtime/installation/" description="TypeScript runtime for Node.js and Bun." />
-</CardGrid>
+<LinkCard title="JavaScript Runtime" href="/javascript-runtime/installation/" description="TypeScript runtime for Node.js and Bun." />
 
 ---
 
-## Install a runtime
+## Install the runtime
 
-<Tabs>
-  <TabItem label="Go runner">
-    See the [Go runner installation guide](/runner-cli/installation/) for setup instructions.
-  </TabItem>
-  <TabItem label="JavaScript runtime">
-    See the [JavaScript runtime installation guide](/javascript-runtime/installation/) for setup instructions.
-  </TabItem>
-</Tabs>
+See the [JavaScript runtime installation guide](/javascript-runtime/installation/) for setup instructions.
 
 ---
 
 ## Run a workflow
 
-Once a runtime is installed, use `quack` to run any `.flux.yaml` file:
+Once a runtime is installed, use `quack` to run any `.duck.yaml` file:
 
 ```sh
-quack hello.flux.yaml
+quack hello.duck.yaml
 ```
 
 That's the full command. The runtime reads the file, executes the flow, and prints the output.
@@ -4032,7 +4015,7 @@ That's the full command. The runtime reads the file, executes the flow, and prin
 Use `--cwd` to set the base working directory for `exec` participants:
 
 ```sh
-quack deploy.flux.yaml --cwd ./repo
+quack deploy.duck.yaml --cwd ./repo
 ```
 
 This is equivalent to setting `defaults.cwd` in the workflow file itself, but applied from the command line. Useful when the workflow is shared but the working directory varies per environment.
@@ -5364,7 +5347,7 @@ The execution path here depends on the critic. If it emits `review.rejected`, th
 ### duckflux
 
 ```yaml
-# code-assist.flux.yaml
+# code-assist.duck.yaml
 participants:
   plan:
     type: exec
@@ -5710,7 +5693,7 @@ bun add -g @duckflux/runner
 6. **Run it:**
 
 ```bash
-duckflux run my-workflow.flux.yaml
+duckflux run my-workflow.duck.yaml
 ```
 
 <Aside type="tip">
@@ -5726,6 +5709,855 @@ Ralph Orchestrator's event-driven model is a real innovation for multi-agent coo
 duckflux takes a different bet: most of the time, you know the execution order. When you do, explicit flow is easier to read, debug, and maintain than event topology. And when you genuinely need decoupled coordination, `emit` + `wait` are there.
 
 The question isn't "which tool is more powerful." It's "how much of your workflow is actually non-deterministic?" If the answer is "not much," explicit flow wins. If you're orchestrating five agents that genuinely need to signal each other asynchronously, Ralph's model has merit. duckflux gives you the choice.
+
+---
+
+# Migrating from GitHub Actions
+> How to replace GitHub Actions CI/CD workflows with declarative duckflux workflows, and why you'd want to.
+
+
+This might sound unexpected: duckflux can replace your CI/CD pipeline.
+
+Not the platform (triggers, managed runners, secret vaults). The **workflow execution layer**. The part that actually sequences your build, test, lint, and deploy steps.
+
+The reason is simpler than it seems: GitHub Actions steps are shell commands. The `run:` field executes a shell script. The `uses:` field invokes an action, which is a packaged shell script, Node.js program, or Docker container. If you can run the underlying command on a machine, you can run it via a duckflux `exec` participant.
+
+The difference is what you get on top. duckflux adds conditional loops, retry with exponential backoff, events across parallel branches, automatic I/O chaining, and sub-workflows with shared event hubs. GitHub Actions has none of these natively.
+
+You lose the platform: triggers, the actions marketplace, managed compute, integrated secrets, PR status checks. But you gain portability, expressiveness, and a workflow spec that runs the same on your laptop, in a container, or inside a GHA job.
+
+---
+
+## What GitHub Actions steps really are
+
+GitHub Actions has three types of steps:
+
+1. **`run:`** executes a shell command directly.
+2. **`uses:`** invokes an action (a JavaScript program, a Docker container, or a composite of other steps).
+3. **Composite actions** are reusable groups of `run:` and `uses:` steps.
+
+All three ultimately resolve to shell commands or processes running on the host. The `uses:` layer is a packaging and distribution mechanism, not a runtime primitive.
+
+Common actions and what they actually do:
+
+| Action | What it wraps |
+|---|---|
+| `actions/checkout@v4` | `git checkout` with token injection |
+| `actions/setup-node@v4` | Downloads Node.js, updates `$PATH` |
+| `actions/cache@v4` | `tar`, hash computation, HTTP upload/download to GitHub's cache API |
+| `actions/upload-artifact@v4` | HTTP upload to GitHub's artifact storage |
+
+The first two are trivially replaceable by shell commands. The last two depend on GitHub's infrastructure.
+
+The implication: for most pipelines, you can extract the `run:` commands and the commands behind `uses:` actions, and express them as duckflux `exec` participants. The exceptions are actions that deeply integrate with GitHub's API (status checks, artifact storage, CodeQL, OIDC).
+
+---
+
+## Concepts side by side
+
+| GitHub Actions | duckflux | Notes |
+|---|---|---|
+| `.github/workflows/*.yml` | `.duck.yaml` file | Both are declarative YAML. |
+| `on:` triggers | External trigger (cron, webhook, CLI) | duckflux is a runner, not a CI platform. Trigger via `crontab`, webhook, or `duckflux run`. |
+| `workflow_dispatch` inputs | `inputs:` with JSON Schema | duckflux validates at parse time. Supports `type`, `default`, `required`, `minimum`, `maximum`. |
+| jobs | participants | Named, reusable step definitions. |
+| steps with `run:` | `type: exec` with `run:` | Direct equivalent. |
+| steps with `uses:` | `type: exec` running the underlying command | Replace the action with the shell command it wraps. |
+| `env:` / secrets | `env.*` in CEL, OS env vars | duckflux inherits the process environment. `env.DEPLOY_TOKEN` in any CEL expression. |
+| `needs:` (job deps) | Sequential flow or `when` guards | Steps execute top-to-bottom by default. |
+| `strategy.matrix` | `parallel:` with explicit branches | No dynamic matrix. Explicit branches for each variant. |
+| `if:` conditions | `when:` guard or `if:` construct | `when` for single steps, `if`/`then`/`else` for branches. |
+| `continue-on-error` | `onError: skip` | Per-step error handling. Also `onError: retry` and `onError: <fallback>`. |
+| `timeout-minutes` | `timeout:` (e.g. `5m`, `30s`) | Per-step or global via `defaults`. |
+| reusable workflows | `type: workflow` + `path:` | Sub-workflows share the event hub (GHA reusable workflows are isolated). |
+| artifacts | I/O chain | stdout of step N becomes stdin of step N+1. No files, no template syntax. |
+| `working-directory` | `cwd:` | Supports CEL expressions (e.g. `workflow.inputs.packagePath`). |
+| concurrency groups | No equivalent | Multiple `duckflux run` invocations run independently. |
+| `services:` | Not in scope | Use Docker Compose in a setup step. |
+
+---
+
+## Side-by-side: a real CI/CD pipeline
+
+### Simple build-test-deploy
+
+<Tabs>
+  <TabItem label="GitHub Actions">
+    ```yaml title=".github/workflows/ci.yml"
+    name: CI
+    on:
+      push:
+        branches: [main]
+      pull_request:
+
+    jobs:
+      ci:
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v4
+
+          - uses: actions/setup-node@v4
+            with:
+              node-version: '20'
+
+          - run: npm ci
+
+          - run: npm run lint
+
+          - run: npm test
+
+          - run: npm run build
+
+          - name: Deploy
+            run: ./deploy.sh
+            if: github.ref == 'refs/heads/main'
+    ```
+  </TabItem>
+  <TabItem label="duckflux">
+    ```yaml title="ci-pipeline.duck.yaml"
+    inputs:
+      ref:
+        type: string
+        default: "main"
+
+    participants:
+      install:
+        type: exec
+        run: npm ci
+
+      lint:
+        type: exec
+        run: npm run lint
+
+      test:
+        type: exec
+        run: npm test
+
+      build:
+        type: exec
+        run: npm run build
+
+      deploy:
+        type: exec
+        run: ./deploy.sh
+
+    flow:
+      - install
+      - parallel:
+          - lint
+          - test
+      - build
+      - deploy:
+          when: workflow.inputs.ref == "main"
+    ```
+  </TabItem>
+</Tabs>
+
+Key differences:
+
+- **No checkout/setup actions.** You run duckflux where the code already exists (your machine, a pre-configured container, a self-hosted runner). Checkout and setup happen before `duckflux run`.
+- **Lint and test run in parallel.** In GHA, steps within a job are sequential. To parallelize, you need separate jobs with `needs:`. In duckflux, `parallel:` is a flow construct.
+- **`when` replaces `if:`.** The deploy step only runs when the ref is `main`. Same logic, declarative guard.
+- **No `runs-on:`.** duckflux runs wherever you invoke it.
+
+### Matrix strategy
+
+<Tabs>
+  <TabItem label="GitHub Actions">
+    ```yaml title=".github/workflows/matrix.yml"
+    jobs:
+      test:
+        runs-on: ubuntu-latest
+        strategy:
+          matrix:
+            node-version: [18, 20, 22]
+        steps:
+          - uses: actions/checkout@v4
+          - uses: actions/setup-node@v4
+            with:
+              node-version: ${{ matrix.node-version }}
+          - run: npm ci
+          - run: npm test
+    ```
+  </TabItem>
+  <TabItem label="duckflux">
+    ```yaml title="matrix-test.duck.yaml"
+    flow:
+      - parallel:
+          - as: test-node-18
+            type: exec
+            run: nvm use 18 && npm ci && npm test
+
+          - as: test-node-20
+            type: exec
+            run: nvm use 20 && npm ci && npm test
+
+          - as: test-node-22
+            type: exec
+            run: nvm use 22 && npm ci && npm test
+    ```
+  </TabItem>
+</Tabs>
+
+This is more verbose than GHA's matrix. For three variants it's fine. For a 5x3 matrix (5 OS targets x 3 Node versions), GHA's matrix is the better tool. duckflux has no dynamic matrix primitive.
+
+<Aside type="note">
+duckflux is not trying to replace every GHA feature. Matrix strategies with large dimensions are a genuine GHA strength. Use each tool where it fits.
+</Aside>
+
+---
+
+## Where duckflux goes beyond
+
+### Conditional loops
+
+GHA has no loop construct. If you need to retry a flaky integration test suite until it passes, you unroll iterations manually, use a recursive reusable workflow, or install a third-party action.
+
+**duckflux:**
+```yaml
+flow:
+  - loop:
+      until: tests.status == "success"
+      max: 5
+      steps:
+        - as: tests
+          type: exec
+          run: npm run test:integration
+          onError: skip
+```
+
+Five lines. Run the tests, retry up to 5 times, stop when they pass.
+
+### Retry with exponential backoff
+
+GHA's `continue-on-error` lets a step fail without stopping the workflow, but there is no retry mechanism. You need third-party actions like `nick-fields/retry` or shell loops.
+
+**duckflux:**
+```yaml
+participants:
+  deploy:
+    type: exec
+    run: ./deploy.sh
+    onError: retry
+    retry:
+      max: 3
+      backoff: 5s
+      factor: 2
+```
+
+Three retries with 5s, 10s, 20s intervals. Built into the spec.
+
+### Events (emit/wait)
+
+GHA steps cannot signal each other asynchronously. Sharing data between steps requires writing to `$GITHUB_OUTPUT` files and reading via `${{ steps.id.outputs.key }}` template syntax. There is no push-based event system.
+
+**duckflux:**
+```yaml
+flow:
+  - parallel:
+      - as: build
+        type: exec
+        run: npm run build
+
+      - as: notify-start
+        type: emit
+        event: "build.started"
+        payload:
+          branch: workflow.inputs.branch
+
+  - wait:
+      event: "deploy.approved"
+      timeout: 30m
+      onTimeout: fail
+
+  - as: deploy
+    type: exec
+    run: ./deploy.sh
+```
+
+Events propagate within the workflow, across parallel branches, and across parent/child sub-workflows. The `wait` step pauses execution until the event arrives or the timeout expires.
+
+### I/O chain
+
+GHA's data passing between steps is verbose:
+
+```yaml
+# GHA: step A writes output
+- id: version
+  run: echo "tag=$(git describe --tags)" >> $GITHUB_OUTPUT
+
+# GHA: step B reads it
+- run: echo "Deploying ${{ steps.version.outputs.tag }}"
+```
+
+**duckflux:**
+```yaml
+flow:
+  - type: exec
+    run: git describe --tags
+
+  - as: deploy
+    type: exec
+    run: ./deploy.sh
+```
+
+stdout of step 1 chains as stdin to step 2. No output declarations, no template syntax, no file writing. Unix pipes as a workflow primitive.
+
+### Sub-workflows with shared events
+
+GHA reusable workflows are fully isolated. A called workflow cannot emit events back to the caller mid-execution. You pass inputs and get outputs when it's done.
+
+**duckflux:**
+```yaml
+# parent.duck.yaml
+flow:
+  - as: setup
+    type: workflow
+    path: ./setup-db.duck.yaml
+
+  - wait:
+      event: "db.ready"
+      timeout: 2m
+
+  - as: tests
+    type: exec
+    run: npm run test:integration
+```
+
+```yaml
+# setup-db.duck.yaml
+participants:
+  start-db:
+    type: exec
+    run: docker compose up -d postgres
+
+  signal:
+    type: emit
+    event: "db.ready"
+    payload:
+      host: "'localhost'"
+      port: "'5432'"
+
+flow:
+  - start-db
+  - wait:
+      until: "true"
+      poll: 1s
+      timeout: 30s
+  - signal
+```
+
+The sub-workflow emits `db.ready` mid-execution. The parent reacts immediately. GHA reusable workflows cannot do this.
+
+---
+
+## What you lose
+
+**Trigger system.** duckflux does not have `on: push` or `on: pull_request`. It is a workflow runner, not a CI platform. You need an external mechanism (cron, a webhook server, or a GHA wrapper) to trigger runs.
+
+**Actions marketplace.** GitHub has 20,000+ reusable actions. Most wrap shell commands (extractable), but some provide deep GitHub API integration that is hard to replicate: `actions/cache`, `actions/upload-artifact`, `github/codeql-action`.
+
+**Managed runners.** GitHub hosts the compute. duckflux runs wherever you invoke it. You bring your own machine.
+
+**Secret management.** GitHub Secrets with environment scoping, org-level secrets, OIDC for cloud providers. duckflux inherits OS environment variables. You bring your own secret management (Vault, 1Password CLI, `doppler`, or just `export`).
+
+**Status checks.** GHA integrates with GitHub PRs natively: commit status, required checks, check run annotations. duckflux has no Git hosting integration. You can call `gh api` from an `exec` step, but it's manual.
+
+**Caching.** `actions/cache` stores dependency caches across runs. duckflux has no cache primitive. You manage caching at the OS or container layer.
+
+**Concurrency groups.** GHA prevents concurrent runs of the same workflow with `concurrency:`. duckflux has no equivalent. Multiple `duckflux run` invocations run independently.
+
+**Container services.** GHA's `services:` spins up sidecar containers (PostgreSQL, Redis) alongside your job. duckflux does not manage containers. Use `docker compose up` in a setup step.
+
+<Aside type="note">
+Most of these gaps are about **platform integration**, not workflow execution. duckflux replaces the runner, not the platform. For triggers and secrets, the hybrid approach (next section) fills the gaps.
+</Aside>
+
+---
+
+## Hybrid: duckflux inside GitHub Actions
+
+You don't have to choose. Use GHA for what it's good at (triggers, compute, secrets) and duckflux for the workflow logic:
+
+```yaml title=".github/workflows/ci.yml"
+name: CI via duckflux
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install duckflux
+        run: npm install -g @duckflux/runner
+
+      - name: Run pipeline
+        run: duckflux run ci-pipeline.duck.yaml
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+          NODE_ENV: production
+```
+
+GHA handles the trigger (`on: push`), the compute (`runs-on: ubuntu-latest`), and the secrets (`${{ secrets.DEPLOY_TOKEN }}`). duckflux handles the workflow logic (sequencing, parallelism, loops, retries, events).
+
+The `.duck.yaml` file is portable. You can run the exact same file locally:
+
+```bash
+export DEPLOY_TOKEN=my-local-token
+duckflux run ci-pipeline.duck.yaml
+```
+
+No need for `act` or other GHA emulators. The workflow runs the same everywhere because it's just shell commands orchestrated by a spec.
+
+<Aside type="tip">
+This hybrid approach lets you migrate incrementally. Move one job at a time from GHA YAML to a `.duck.yaml` file. Keep the GHA workflow as a thin wrapper that triggers `duckflux run`.
+</Aside>
+
+---
+
+## Getting started
+
+1. **Install the runtime:**
+
+```bash
+bun add -g @duckflux/runner
+```
+
+2. **Pick one GitHub Actions workflow** to migrate. Start with the simplest one (build + test).
+
+3. **Extract the `run:` commands** from each GHA step into duckflux participants.
+
+4. **Replace `uses:` actions** with the underlying shell commands they wrap.
+
+5. **Write the `.duck.yaml` flow.** Use `parallel:` for independent steps, `when` for conditionals, `loop` for retries.
+
+6. **Run locally:**
+
+```bash
+duckflux run my-pipeline.duck.yaml
+```
+
+7. **Observe** via the [web server UI](/tooling/web-server-ui/):
+
+```bash
+duckflux server --trace-dir ./traces
+```
+
+<Aside type="tip">
+You don't have to replace GitHub Actions entirely. Start with the hybrid approach: keep GHA for triggers and secrets, move the workflow logic to duckflux. Migrate fully only when the portability and advanced primitives (loops, retry, events) justify it.
+</Aside>
+
+---
+
+## Final thoughts
+
+CI/CD pipelines are workflows. GitHub Actions steps are shell commands. Once you see it that way, the question shifts from "can duckflux do CI/CD?" to "why would I limit myself to a vendor-locked runner that can't loop, can't retry, and can't pass data between steps without file hacks?"
+
+duckflux gives you a portable, spec-conformant YAML that runs the same on your laptop and in a container. For teams already using duckflux for agent orchestration, running CI/CD through the same DSL means one workflow language for everything.
+
+---
+
+# Migrating from Claude Sub-agents
+> When to replace LLM-routed sub-agent orchestration with declarative duckflux workflows, and how to do it.
+
+
+Claude Code's sub-agent system is powerful. You define specialized agents with focused prompts, restricted tools, and independent contexts. Claude decides when to delegate, spawns sub-agents in foreground or background, and synthesizes results. It works.
+
+But there's a design choice buried in the architecture that matters more than any individual feature: **who decides what happens next?** In Claude Sub-agents, the answer is the LLM. The parent agent reads your request, evaluates sub-agent descriptions, and decides which one to spawn. The routing logic lives in inference, not in config.
+
+This article explores why that matters, when it becomes a problem, and how duckflux offers an alternative where the orchestration is deterministic while the *work inside each step* stays as creative as the LLM needs to be.
+
+---
+
+## How Claude Sub-agents work
+
+[Claude Sub-agents](https://code.claude.com/docs/en/sub-agents) are markdown files with YAML frontmatter that define specialized AI assistants. Each sub-agent has its own system prompt, tool restrictions, model choice, and permission mode.
+
+```markdown
+---
+name: code-reviewer
+description: Reviews code for quality and best practices
+tools: Read, Grep, Glob, Bash
+model: sonnet
+---
+
+You are a senior code reviewer. When invoked, analyze the code
+and provide specific, actionable feedback on quality, security,
+and best practices.
+```
+
+At runtime, Claude reads the `description` field of each available sub-agent and decides whether to delegate. You can nudge this with natural language ("use the code-reviewer agent") or force it with @-mentions, but the routing is fundamentally an LLM decision.
+
+Sub-agents run in their own context window. They can't spawn other sub-agents. Results return to the parent, which synthesizes them. For parallel work, you can run multiple sub-agents in the background, or use agent teams for cross-session coordination.
+
+Key capabilities:
+
+- **Isolation.** Each sub-agent has its own context, tools, and permissions.
+- **Model routing.** Haiku for cheap exploration, Opus for complex reasoning, Sonnet as default.
+- **Worktree isolation.** `isolation: worktree` gives a sub-agent a temporary git worktree.
+- **Persistent memory.** Sub-agents can accumulate learnings across sessions.
+- **Hooks.** `PreToolUse`, `PostToolUse`, `Stop` hooks for lifecycle control.
+- **Background execution.** Sub-agents run concurrently while you keep working.
+
+### The non-determinism problem
+
+Here's the thing: Claude Sub-agents are orchestrated by inference. The LLM decides:
+
+1. **Whether** to delegate at all.
+2. **Which** sub-agent to spawn.
+3. **What** prompt to write for the sub-agent.
+4. **When** to synthesize results vs. spawn more agents.
+5. **Whether** to chain sub-agents or return to you.
+
+Each of these decisions is a probabilistic inference. On a good day, Claude makes the right calls. On a bad day, it forgets to delegate, picks the wrong sub-agent, writes a vague task prompt, or synthesizes prematurely.
+
+This is fine for interactive, exploratory work. You're in the loop, you can redirect, you can say "no, use the reviewer agent." But the moment you want a **repeatable pipeline** (plan, code, test, review, deploy), you're asking the LLM to be a reliable router. And LLMs are unreliable routers. They forget steps, miscount iterations, and silently skip transitions.
+
+The sub-agent docs themselves acknowledge this: sub-agents cannot spawn other sub-agents, so chaining requires the parent to orchestrate. But the parent's orchestration logic is just... its next token prediction.
+
+Compare this to how we treat human workflows. Nobody says "here are five specialists, figure out the order." We define processes, assign roles to steps, and execute deterministically. The specialists bring creativity; the process brings structure.
+
+---
+
+## What is duckflux?
+
+[duckflux](https://duckflux.openvibes.tech) is a declarative, YAML-based workflow DSL. The execution order is defined in config, not inferred by an LLM. The runtime handles sequencing, loops, parallelism, retries, events, and tracing.
+
+```yaml
+flow:
+  - type: exec
+    run: npm test
+```
+
+The key difference: **duckflux separates orchestration from execution.** The workflow file defines *what happens in what order*. Each step can invoke an LLM, run a shell command, call an HTTP API, or trigger a sub-workflow. The LLM does creative work inside each step. The workflow DSL handles the plumbing between steps.
+
+---
+
+## The determinism spectrum
+
+It's not binary. Different parts of a pipeline need different levels of determinism.
+
+| Concern | Needs determinism? | Why |
+|---|---|---|
+| Step ordering | Yes | Plan before code, test before deploy. Not negotiable. |
+| Retry logic | Yes | "Retry 3 times with backoff" is a policy, not a creative decision. |
+| Quality gates | Yes | Tests pass or they don't. Exit codes, not vibes. |
+| Error handling | Yes | "If deploy fails, notify Slack" is a business rule. |
+| Code generation | No | The LLM should be creative here. |
+| Code review | No | The LLM should reason freely about quality. |
+| Planning | No | Breaking tasks into subtasks is inherently creative. |
+
+Claude Sub-agents put everything on the non-deterministic side. duckflux lets you draw the line where it makes sense: deterministic orchestration, non-deterministic execution.
+
+---
+
+## Concepts side by side
+
+| Claude Sub-agents | duckflux | Notes |
+|---|---|---|
+| Sub-agent (markdown file) | Participant | A unit of work. In duckflux, not limited to LLM invocations. |
+| `description` (LLM-routed) | Flow position / `when` guard | Explicit placement replaces LLM routing decisions. |
+| Parent decides delegation | `flow` array | Ordering is declared, not inferred. |
+| `maxTurns` | `retry.max` / `loop.max` | Iteration caps per step, not per agent context. |
+| `isolation: worktree` | `cwd` per participant | Working directory isolation per step. |
+| Background sub-agents | `parallel:` construct | Concurrent execution declared in config. |
+| Chained sub-agents | Sequential flow | No LLM needed to decide "run B after A." |
+| Sub-agent hooks | `onError`, `when`, `emit`/`wait` | Lifecycle control in the DSL, not in hook scripts. |
+| Persistent memory | `execution.context` / `set` | Workflow-scoped state. Cross-session memory is outside duckflux scope. |
+| Model routing | N/A (bring your own agent CLI) | duckflux orchestrates commands; model choice is per-agent. |
+
+---
+
+## Migration patterns
+
+### Chained sub-agents
+
+In Claude Sub-agents, chaining requires the parent to decide the sequence:
+
+```text
+Use the code-reviewer subagent to find performance issues,
+then use the optimizer subagent to fix them
+```
+
+The parent LLM interprets "then" and decides to spawn the optimizer after the reviewer. If it misunderstands, it might run them in parallel, skip the optimizer, or synthesize prematurely.
+
+**duckflux:**
+```yaml
+participants:
+  review:
+    type: exec
+    run: cat PROMPT_REVIEW.md | $AGENT
+
+  optimize:
+    type: exec
+    run: cat PROMPT_OPTIMIZE.md | $AGENT
+
+flow:
+  - review
+  - optimize
+```
+
+"Then" is a line break in the YAML. No inference needed.
+
+### Parallel research
+
+Claude Sub-agents can run research in parallel via background tasks:
+
+```text
+Research the authentication, database, and API modules
+in parallel using separate subagents
+```
+
+Again, the parent decides whether to actually parallelize, which sub-agents to use, and how to synthesize.
+
+**duckflux:**
+```yaml
+flow:
+  - parallel:
+      - as: auth-research
+        type: exec
+        run: cat PROMPT_AUTH.md | $AGENT
+
+      - as: db-research
+        type: exec
+        run: cat PROMPT_DB.md | $AGENT
+
+      - as: api-research
+        type: exec
+        run: cat PROMPT_API.md | $AGENT
+```
+
+Parallelism is declared. All three run concurrently. The outputs are collected in an array for the next step. No LLM routing decision required.
+
+### Review loop with quality gates
+
+A common Claude Sub-agents pattern: code, then review, then fix if needed. The parent decides when to stop.
+
+```text
+Use the coder subagent to implement the feature,
+then use the reviewer subagent to check it.
+If there are issues, have the coder fix them.
+Repeat until the reviewer approves.
+```
+
+The parent LLM manages the iteration. It decides whether to loop, how many times, and when to stop. If it loses track, the loop might run forever (capped by `maxTurns`) or stop too early.
+
+**duckflux:**
+```yaml
+participants:
+  code:
+    type: exec
+    run: cat PROMPT_CODE.md | $AGENT
+    onError: retry
+    retry:
+      max: 3
+      backoff: 2s
+
+  test:
+    type: exec
+    run: npm test
+
+  lint:
+    type: exec
+    run: npm run lint
+
+  review:
+    type: exec
+    run: cat PROMPT_REVIEW.md | $AGENT
+
+flow:
+  - loop:
+      until: review.output.approved == true
+      max: 5
+      steps:
+        - code
+        - test
+        - lint
+        - review
+```
+
+The loop condition, iteration cap, and quality gates are all in the config. The LLM does creative work inside `code` and `review`. The DSL handles the loop, the exit condition, and the gates. `test` and `lint` are real commands with real exit codes, not prompt instructions asking the agent to self-report.
+
+### Tool-restricted agents
+
+Claude Sub-agents excel at tool restriction. A reviewer gets `Read, Grep, Glob` but not `Write, Edit`. This is enforced by the framework.
+
+duckflux doesn't enforce tool restrictions because it doesn't manage agent sessions. Each `exec` step runs a shell command. If that command invokes an agent CLI, the agent's own config handles tool restrictions.
+
+```yaml
+participants:
+  review:
+    type: exec
+    run: claude --agent code-reviewer --print "Review the auth module"
+    # The code-reviewer agent definition restricts its own tools
+```
+
+This is a tradeoff. duckflux gives you orchestration without coupling to a specific agent runtime. Tool isolation is the agent's responsibility, not the workflow's.
+
+### Event-driven coordination
+
+Claude Sub-agents have no event system. If sub-agent A needs to signal sub-agent B, the parent synthesizes A's output and writes B's prompt. The coordination happens in the parent's inference.
+
+duckflux has native `emit` + `wait` for cases where steps genuinely need to signal each other:
+
+```yaml
+flow:
+  - parallel:
+      - as: data-prep
+        type: exec
+        run: ./prepare-data.sh
+
+      - as: wait-for-data
+        type: exec
+        run: |
+          # This branch waits for data-prep to signal readiness
+
+  - wait:
+      event: "data.ready"
+      timeout: 5m
+
+  - as: process
+    type: exec
+    run: ./process.sh
+```
+
+Events work across parallel branches, across parent/child workflows, and with external event hubs (NATS, Redis). This is coordination infrastructure that the sub-agent model lacks entirely.
+
+---
+
+## When to keep sub-agents
+
+Sub-agents are the right tool when:
+
+- **You're working interactively.** Typing in Claude Code, exploring a codebase, asking questions. The LLM-routed delegation is exactly right here because you're in the loop.
+- **The workflow is genuinely emergent.** You don't know the steps upfront. The agent needs to figure out what to do based on what it finds.
+- **Context preservation matters.** Each sub-agent's isolated context window prevents pollution of the main conversation. This is a real advantage for high-volume operations.
+- **You need model routing.** Sending cheap tasks to Haiku and expensive tasks to Opus within a single session is built into the sub-agent model.
+
+## When to switch to duckflux
+
+Switch when:
+
+- **The workflow is repeatable.** If you've typed the same chaining instructions more than twice, it should be a config file.
+- **You need guaranteed step ordering.** Plan, code, test, review, deploy. Always in that order. No exceptions.
+- **You need real quality gates.** Not "please run the tests", but `npm test` as an actual step with an exit code.
+- **You need audit trails.** Structured JSON traces per step, visible in the [web server UI](/tooling/web-server-ui/).
+- **You need cross-agent events.** Steps signaling each other, waiting for external events, publishing to message queues.
+- **You want provider independence.** duckflux orchestrates `$AGENT`, not Claude specifically. Swap agents per step.
+
+---
+
+## What you gain
+
+| Concern | Claude Sub-agents | duckflux |
+|---|---|---|
+| **Routing** | LLM decides (probabilistic) | Config declares (deterministic) |
+| **Step ordering** | Parent LLM inference | `flow` array, top to bottom |
+| **Quality gates** | Prompt instructions | Real commands with exit codes |
+| **Retry** | `maxTurns` (global per agent) | `retry.max` with backoff (per step) |
+| **Parallel** | Background sub-agents (LLM decides) | `parallel:` construct (declared) |
+| **Events** | None | `emit` + `wait` (cross-branch, cross-workflow) |
+| **Tracing** | Transcript files | Structured JSON + [web server UI](/tooling/web-server-ui/) |
+| **Provider lock-in** | Claude Code only | Any agent CLI, any runtime |
+
+## What you lose
+
+- **Interactive delegation.** The natural "use the reviewer agent" UX in Claude Code. duckflux is a runner, not an interactive assistant.
+- **Context isolation.** Sub-agents protect the parent's context window. duckflux steps are independent commands, but they don't share a conversation context across steps.
+- **Tool restriction enforcement.** Sub-agents have framework-level tool control. In duckflux, that's the agent's responsibility.
+- **Model routing within the workflow.** Sub-agents can use different models per agent. In duckflux, each `exec` step invokes whatever CLI you point it at.
+- **Persistent memory.** Sub-agents accumulate learnings across sessions. duckflux has `execution.context` for within-workflow state, but cross-session memory is outside scope.
+
+---
+
+## A hybrid approach
+
+You don't have to choose one or the other. The most practical architecture uses both:
+
+```yaml
+# ci-pipeline.duck.yaml
+participants:
+  plan:
+    type: exec
+    run: claude --agent planner --print "$(cat SPEC.md)"
+
+  code:
+    type: exec
+    run: claude --agent coder --print "Implement the plan in PLAN.md"
+    onError: retry
+    retry:
+      max: 3
+
+  test:
+    type: exec
+    run: npm test
+
+  lint:
+    type: exec
+    run: npm run lint
+
+  review:
+    type: exec
+    run: claude --agent reviewer --print "Review the implementation"
+
+flow:
+  - plan
+
+  - loop:
+      until: review.output.approved == true
+      max: 5
+      steps:
+        - code
+        - test
+        - lint
+        - review
+```
+
+Each `claude --agent` step is a Claude Sub-agent invocation. The sub-agent gets its isolated context, restricted tools, and specialized prompt. But the **orchestration** (ordering, looping, gating, retrying) is declarative. The LLM does creative work. The YAML handles plumbing.
+
+This is the core argument: **decouple what the LLM is good at (reasoning, generation, analysis) from what config files are good at (sequencing, retrying, branching, gating).** Don't ask the LLM to be a router when you already know the route.
+
+---
+
+## Getting started
+
+1. **Install the runtime:**
+
+```bash
+bun add -g @duckflux/runner
+```
+
+2. **Identify your repeatable workflows.** Which sub-agent chains do you run the same way every time?
+
+3. **Extract the ordering into a `.duck.yaml`.** Each sub-agent becomes a participant. The chain becomes the flow.
+
+4. **Add real quality gates.** Replace "please run the tests" with actual `npm test` steps.
+
+5. **Run it:**
+
+```bash
+duckflux run my-pipeline.duck.yaml
+```
+
+6. **Observe** via `duckflux server --trace-dir ./traces` for a visual trace of every step.
+
+<Aside type="tip">
+Keep using Claude Sub-agents for interactive exploration and ad-hoc tasks. Use duckflux for the workflows you've already figured out and want to run reliably, repeatably, and without babysitting.
+</Aside>
+
+---
+
+## Final thoughts
+
+Claude Sub-agents represent a real step forward in AI-assisted development. The isolated contexts, tool restrictions, and model routing are well-designed primitives.
+
+But the orchestration layer, where the LLM decides what to delegate, when, and in what order, is the weak link. Not because Claude is bad at it, but because orchestration is fundamentally a deterministic problem being solved with a probabilistic tool.
+
+duckflux doesn't replace the agents. It replaces the part of the system that shouldn't be guessing.
 
 ---
 
@@ -5785,7 +6617,7 @@ flow:
     run: npm test
 ```
 
-No SDK. No boilerplate. No vendor lock-in. A workflow is a `.flux.yaml` file that any conforming runtime can execute.
+No SDK. No boilerplate. No vendor lock-in. A workflow is a `.duck.yaml` file that any conforming runtime can execute.
 
 Key features that matter for this migration:
 
@@ -5832,7 +6664,7 @@ This works, but the logic is scattered across bash control flow, there's no stru
 
 ### The duckflux way
 
-```yaml title="codegen-loop.flux.yaml"
+```yaml title="codegen-loop.duck.yaml"
 flow:
   - as: generate-and-test
     type: exec
@@ -5846,7 +6678,7 @@ That's it. The same behavior (iterative execution with a retry ceiling) expresse
 
 But duckflux lets you go further. Let's decompose the steps and add observability:
 
-```yaml title="codegen-loop-v2.flux.yaml"
+```yaml title="codegen-loop-v2.duck.yaml"
 participants:
   generate:
     type: exec
@@ -6012,12 +6844,12 @@ flow:
 bun add -g @duckflux/runner
 ```
 
-2. **Write your workflow** as a `.flux.yaml` file using the patterns above.
+2. **Write your workflow** as a `.duck.yaml` file using the patterns above.
 
 3. **Run it:**
 
 ```bash
-duckflux run codegen-loop.flux.yaml
+duckflux run codegen-loop.duck.yaml
 ```
 
 4. **Inspect the trace** to see exactly what happened at each step.

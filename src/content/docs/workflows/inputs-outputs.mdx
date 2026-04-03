@@ -98,13 +98,13 @@ Inputs can be provided via the CLI in three equivalent ways (highest priority wi
 
 ```bash
 # Inline flags
-duckflux run deploy.flux.yaml --input branch=main --input env=staging
+duckflux run deploy.duck.yaml --input branch=main --input env=staging
 
 # JSON file
-duckflux run deploy.flux.yaml --input-file inputs.json
+duckflux run deploy.duck.yaml --input-file inputs.json
 
 # Piped JSON via stdin
-echo '{"branch": "main", "env": "staging"}' | duckflux run deploy.flux.yaml
+echo '{"branch": "main", "env": "staging"}' | duckflux run deploy.duck.yaml
 ```
 
 Resolution priority: `--input` flags > `--input-file` > stdin.
@@ -163,7 +163,7 @@ flow:
 
 ### Flow-level override
 
-When invoking a reusable participant in the flow, you can override its `input` mapping for that specific call. Since v0.5, the flow override **merges** with the participant's declared `input` instead of replacing it:
+When invoking a reusable participant in the flow, you can override its `input` mapping for that specific call. The flow override **merges** with the participant's declared `input` instead of replacing it:
 
 ```yaml
 participants:

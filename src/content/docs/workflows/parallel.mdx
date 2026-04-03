@@ -177,15 +177,15 @@ flow:
   - parallel:
       - as: lintCheck
         type: workflow
-        path: ./lint.flux.yaml
+        path: ./lint.duck.yaml
 
       - as: securityScan
         type: workflow
-        path: ./security.flux.yaml
+        path: ./security.duck.yaml
 
       - as: buildArtifact
         type: workflow
-        path: ./build.flux.yaml
+        path: ./build.duck.yaml
 
   - deploy:
       when: lintCheck.output.passed == true && securityScan.output.clean == true

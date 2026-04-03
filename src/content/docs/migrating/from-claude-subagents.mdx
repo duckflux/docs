@@ -319,7 +319,7 @@ Switch when:
 You don't have to choose one or the other. The most practical architecture uses both:
 
 ```yaml
-# ci-pipeline.flux.yaml
+# ci-pipeline.duck.yaml
 participants:
   plan:
     type: exec
@@ -373,14 +373,14 @@ bun add -g @duckflux/runner
 
 2. **Identify your repeatable workflows.** Which sub-agent chains do you run the same way every time?
 
-3. **Extract the ordering into a `.flux.yaml`.** Each sub-agent becomes a participant. The chain becomes the flow.
+3. **Extract the ordering into a `.duck.yaml`.** Each sub-agent becomes a participant. The chain becomes the flow.
 
 4. **Add real quality gates.** Replace "please run the tests" with actual `npm test` steps.
 
 5. **Run it:**
 
 ```bash
-duckflux run my-pipeline.flux.yaml
+duckflux run my-pipeline.duck.yaml
 ```
 
 6. **Observe** via `duckflux server --trace-dir ./traces` for a visual trace of every step.

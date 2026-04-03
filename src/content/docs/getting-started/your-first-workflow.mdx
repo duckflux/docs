@@ -3,11 +3,11 @@ title: Your first workflow
 description: Create and run your first duckflux workflow in minutes — a step-by-step guide.
 ---
 
-import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside } from '@astrojs/starlight/components';
 
 ## 1. Create the workflow file
 
-Create a file called `hello.flux.yaml` with the following content:
+Create a file called `hello.duck.yaml` with the following content:
 
 ```yaml
 flow:
@@ -21,16 +21,9 @@ That's it — one step, one command. A workflow is just a YAML file with a `flow
 
 ## 2. Install a runtime
 
-Duckflux workflows are plain YAML files — they need a **runtime** to execute. Pick one:
+Duckflux workflows are plain YAML files — they need a **runtime** to execute.
 
-<Tabs>
-  <TabItem label="Go runner">
-    See the [Go runner installation guide](/runner-cli/installation/) for setup instructions.
-  </TabItem>
-  <TabItem label="JavaScript runtime">
-    See the [JavaScript runtime installation guide](/javascript-runtime/installation/) for setup instructions.
-  </TabItem>
-</Tabs>
+See the [JavaScript runtime installation guide](/javascript-runtime/installation/) for setup instructions.
 
 ---
 
@@ -39,7 +32,7 @@ Duckflux workflows are plain YAML files — they need a **runtime** to execute. 
 Once a runtime is installed, use `quack` to run your workflow:
 
 ```sh
-quack hello.flux.yaml
+quack hello.duck.yaml
 ```
 
 The runtime reads the file, executes the flow, and prints the output:

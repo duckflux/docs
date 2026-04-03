@@ -57,7 +57,7 @@ flow:
     run: npm test
 ```
 
-No SDK. No boilerplate. No vendor lock-in. A workflow is a `.flux.yaml` file that any conforming runtime can execute.
+No SDK. No boilerplate. No vendor lock-in. A workflow is a `.duck.yaml` file that any conforming runtime can execute.
 
 Key features that matter for this migration:
 
@@ -104,7 +104,7 @@ This works, but the logic is scattered across bash control flow, there's no stru
 
 ### The duckflux way
 
-```yaml title="codegen-loop.flux.yaml"
+```yaml title="codegen-loop.duck.yaml"
 flow:
   - as: generate-and-test
     type: exec
@@ -118,7 +118,7 @@ That's it. The same behavior (iterative execution with a retry ceiling) expresse
 
 But duckflux lets you go further. Let's decompose the steps and add observability:
 
-```yaml title="codegen-loop-v2.flux.yaml"
+```yaml title="codegen-loop-v2.duck.yaml"
 participants:
   generate:
     type: exec
@@ -284,12 +284,12 @@ flow:
 bun add -g @duckflux/runner
 ```
 
-2. **Write your workflow** as a `.flux.yaml` file using the patterns above.
+2. **Write your workflow** as a `.duck.yaml` file using the patterns above.
 
 3. **Run it:**
 
 ```bash
-duckflux run codegen-loop.flux.yaml
+duckflux run codegen-loop.duck.yaml
 ```
 
 4. **Inspect the trace** to see exactly what happened at each step.

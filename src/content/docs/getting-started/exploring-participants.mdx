@@ -95,7 +95,7 @@ The `type` field determines how a participant executes:
 | `exec` | Runs a shell command. Output is the command's stdout. |
 | `http` | Makes an HTTP request. Supports dynamic URLs, headers, and body via CEL. |
 | `mcp` | Invokes a tool on an MCP server. |
-| `workflow` | Runs another `.flux.yaml` file as a sub-workflow. |
+| `workflow` | Runs another `.duck.yaml` file as a sub-workflow. |
 | `emit` | Publishes an event to the workflow's event hub. |
 
 ### `exec`
@@ -151,7 +151,7 @@ Embeds another workflow file as a step. Paths are resolved relative to the paren
 participants:
   reviewCycle:
     type: workflow
-    path: ./review-loop.flux.yaml
+    path: ./review-loop.duck.yaml
     input:
       repo: workflow.inputs.repoUrl
 ```

@@ -34,12 +34,6 @@ const CORE_SLUGS: string[] = [
   'workflows/error-handling',
   'workflows/nested-workflows',
   'workflows/runtimes',
-  // Runner CLI reference
-  'runner-cli/introduction',
-  'runner-cli/installation',
-  'runner-cli/running-workflows',
-  'runner-cli/linting-validation',
-  'runner-cli/event-hubs-channels',
   // JavaScript runtime reference
   'runtime/cli',
   'runtime/event-hub-providers',
@@ -56,7 +50,7 @@ const EXCLUDED_SLUGS = new Set([
   'getting-started/your-first-workflow',
   'getting-started/exploring-participants',
   'runtime/overview',
-  'runner-cli',    // index page with no content beyond navigation
+
   'tooling',
 ]);
 
@@ -81,16 +75,6 @@ const INDEX_SECTIONS: { label: string; slugs: string[] }[] = [
       'workflows/error-handling',
       'workflows/nested-workflows',
       'workflows/runtimes',
-    ],
-  },
-  {
-    label: 'Runner CLI (Go)',
-    slugs: [
-      'runner-cli/introduction',
-      'runner-cli/installation',
-      'runner-cli/running-workflows',
-      'runner-cli/linting-validation',
-      'runner-cli/event-hubs-channels',
     ],
   },
   {
